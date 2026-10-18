@@ -245,9 +245,19 @@ that integration file; reinstalling/updating it may overwrite this local patch.
 
 `failed`, `blocked`, `timed_out`, `interrupted`, `unknown`, and `launch_uncertain`
 are not success. A completed CLI report is also not proof of correct code; require
-test evidence and independent review. Keep failed records for recovery. Local
-records have no automatic expiry; remove only runs you deliberately no longer
-need, after their agents have stopped, never while they own a checkout lease.
+test evidence and independent review. Keep failed records for recovery.
+
+Old runs are removed with `node src/cli.mjs prune [--days 7] [--dry-run]`. It
+deletes a run directory (including its Pi session and task records) only after
+no file in it has changed for that many days, and always keeps runs that hold a
+checkout lease or have a running worker. Worker transcripts kept by Claude Code
+and OpenCode themselves are not touched. A daily cron entry:
+
+```cron
+0 12 * * * /path/to/node ~/dotfiles/herdr/plugins/orchestrator/src/cli.mjs prune --days 7 >> ~/.local/state/herdr/plugins/personal.orchestrator/prune.log 2>&1
+```
+
+Cron has no nvm on its PATH, so use node's absolute path (`command -v node`).
 
 ## Development and verification
 

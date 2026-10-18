@@ -4,7 +4,7 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { once } from 'node:events';
-import { createRun, readRun, listTasks, publish, taskDir, recoverTask } from './team.mjs';
+import { createRun, readRun, listTasks, publish, taskDir, recoverTask, pruneRuns } from './team.mjs';
 import { invocation, openPane, currentPane, requireHerdr, PLUGIN_ID } from './herdr.mjs';
 import { piLaunch } from './profiles.mjs';
 import { snapshotAgents } from './agents.mjs';
@@ -15,6 +15,9 @@ const ROOT = fileURLToPath(new URL('../', import.meta.url));
 function required(env, key) {
   if (!env[key]) throw new Error(`Missing ${key}; launch through the Herdr plugin`);
   return env[key];
+}
+function stateDirFor(env) {
+  return env.HERDR_PLUGIN_STATE_DIR || join(env.XDG_STATE_HOME || join(env.HOME || homedir(), '.local/state'), 'herdr/plugins', PLUGIN_ID);
 }
 function runsFor(stateRoot, project) {
   let ids;
@@ -104,6 +107,20 @@ export async function main(mode = process.argv[2], {
     output.write(`Recorded ${task.status} for ${task.role} task ${task.id}; its checkout lease (if any) is released.\n`);
     return;
   }
+  if (mode === 'prune') {
+    // Safe for cron: runs outside Herdr and never touches leased or live runs.
+    const args = process.argv.slice(3);
+    const days = args.includes('--days') ? Number(args[args.indexOf('--days') + 1]) : 7;
+    const dryRun = args.includes('--dry-run');
+    if (!(days > 0) || args.some((arg, i) => !['--days', '--dry-run'].includes(arg) && args[i - 1] !== '--days')) {
+      throw new Error('Usage: node src/cli.mjs prune [--days N] [--dry-run]');
+    }
+    const { removed, kept } = pruneRuns(stateDirFor(env), { maxAgeMs: days * 86_400_000, dryRun });
+    const stamp = new Date().toISOString();
+    for (const run of removed) output.write(`${stamp} ${dryRun ? 'would remove' : 'removed'} ${run.dir} (last activity ${run.lastActivity})\n`);
+    output.write(`${stamp} ${removed.length} run(s) ${dryRun ? 'would be ' : ''}removed, ${kept.length} kept (idle limit ${days} days)\n`);
+    return;
+  }
   if (mode === 'dashboard') {
     // A Herdr action has no terminal: detach so the server outlives the action.
     if (!interactive) {
@@ -119,8 +136,7 @@ export async function main(mode = process.argv[2], {
   if (mode === 'start-here') {
     if (!interactive) throw new Error('start-here requires an interactive terminal; run start.sh directly, not a plugin action');
     const pane = await currentPane(env); // Explicit caller identity, never the focused pane.
-    const home = env.HOME || homedir();
-    const stateDir = env.HERDR_PLUGIN_STATE_DIR || join(env.XDG_STATE_HOME || join(home, '.local/state'), 'herdr/plugins', PLUGIN_ID);
+    const stateDir = stateDirFor(env);
     const runDir = createRun(stateDir, realpathSync(cwd), pane.workspace_id, snapshotAgents(ROOT));
     publish(join(runDir, 'coordinator.json'), { pane });
     output.write(`Feature orchestrator in this pane. Records: ${runDir}\n`);
@@ -157,7 +173,7 @@ export async function main(mode = process.argv[2], {
     finally { process.off('SIGINT', ignore); process.off('SIGTERM', abort); process.off('SIGHUP', abort); }
   }
   if (mode === 'status-pane') return statusPane(env, output);
-  throw new Error('Usage: node src/cli.mjs start-here|start|status|dashboard|coordinator|worker|status-pane|claude-hook|inspect RUN_DIR|recover RUN_DIR TASK_ID [--confirm]');
+  throw new Error('Usage: node src/cli.mjs start-here|start|status|dashboard|coordinator|worker|status-pane|claude-hook|inspect RUN_DIR|recover RUN_DIR TASK_ID [--confirm]|prune [--days N] [--dry-run]');
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });

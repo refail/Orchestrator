@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdirSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, rmSync, readdirSync, statSync } from 'node:fs';
+import { mkdirSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, rmSync, readdirSync, statSync, lstatSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkSnapshot, teamSection, NAME } from './agents.mjs';
@@ -110,6 +110,37 @@ function staleLock(lock) {
   try { pid = Number(readFileSync(join(lock, 'owner'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
   if (Number.isInteger(pid) && pid > 0) return !alive(pid);
   try { return Date.now() - statSync(lock).mtimeMs > 60_000; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
+}
+// Newest modification time anywhere in a directory tree (Pi appends to its
+// session while a run is in use, so this tracks real activity).
+function lastActivity(dir) {
+  let newest = lstatSync(dir).mtimeMs;
+  for (const entry of readdirSync(dir, { recursive: true })) newest = Math.max(newest, lstatSync(join(dir, entry)).mtimeMs);
+  return newest;
+}
+// Delete run records idle for longer than maxAgeMs. Runs holding a checkout
+// lease or with a live worker are always kept.
+export function pruneRuns(stateRoot, { maxAgeMs, now = Date.now(), dryRun = false }) {
+  let ids;
+  try { ids = readdirSync(join(stateRoot, 'runs')); } catch (error) { if (error.code === 'ENOENT') return { removed: [], kept: [] }; throw error; }
+  stateRoot = realpathSync(stateRoot);
+  let leaseFiles = [];
+  try { leaseFiles = readdirSync(join(stateRoot, 'leases')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  const leased = new Set(leaseFiles.filter(name => name.endsWith('.json')).map(name => optionalJson(join(stateRoot, 'leases', name))?.runDir));
+  const removed = [], kept = [];
+  for (const id of ids.filter(id => ID.test(id)).sort()) {
+    const dir = join(stateRoot, 'runs', id);
+    let tasks = [];
+    try { tasks = listTasks(dir); } catch { /* damaged record: judged by age alone */ }
+    const last = lastActivity(dir);
+    const reason = leased.has(dir) ? 'holds the checkout lease'
+      : tasks.some(task => task.status === 'running') ? 'a worker is still running'
+      : now - last < maxAgeMs ? 'recent activity' : null;
+    if (reason) { kept.push({ dir, reason }); continue; }
+    if (!dryRun) rmSync(dir, { recursive: true, force: true });
+    removed.push({ dir, lastActivity: new Date(last).toISOString() });
+  }
+  return { removed, kept };
 }
 function text(value, name, max) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || value.includes('\0')) throw new Error(`Invalid ${name} (1–${max} characters)`);

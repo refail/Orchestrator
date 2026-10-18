@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, utimesSync, readdirSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRun, delegate, taskStatus, listTasks, finishTask, waitForTasks, readTask, readRun, recoverTask } from '../src/team.mjs';
+import { createRun, delegate, taskStatus, listTasks, finishTask, waitForTasks, readTask, readRun, recoverTask, pruneRuns } from '../src/team.mjs';
 import { config as agents, DEFAULTS } from './fixtures/agents.mjs';
 
 function fixture(t, overrides = {}) {
@@ -219,4 +219,33 @@ test('tasks are listed in creation order', async t => {
     await new Promise(resolve => setTimeout(resolve, 5)); // distinct createdAt timestamps
   }
   assert.deepEqual(listTasks(run).map(task => task.id), ids);
+});
+
+test('pruning removes runs idle for longer than the limit, but never active or leased ones', async t => {
+  const { run: old, state, project } = fixture(t);
+  const recent = createRun(state, project, 'w1', DEFAULTS);
+  const leased = createRun(state, project, 'w1', DEFAULTS);
+  const running = createRun(state, project, 'w1', DEFAULTS);
+  mkdirSync(join(recent, 'sessions'));
+  await delegate(leased, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane);
+  const worker = await delegate(running, { role: 'researcher', title: 'Find', brief: 'Find' }, openPane);
+  writeFileSync(join(worker.directory, 'started.json'), JSON.stringify({ pid: process.pid }));
+  const week = 7 * 24 * 3600_000, now = Date.now() + 30 * 24 * 3600_000;
+  const age = (dir, ms) => {
+    const when = new Date(now - ms);
+    for (const entry of readdirSync(dir, { recursive: true })) utimesSync(join(dir, entry), when, when);
+    utimesSync(dir, when, when);
+  };
+  for (const dir of [old, leased, running]) age(dir, week + 60_000);
+  age(recent, week + 60_000);
+  utimesSync(join(recent, 'sessions'), new Date(now - 1000), new Date(now - 1000)); // a Pi session still in use
+  const preview = pruneRuns(state, { maxAgeMs: week, now, dryRun: true });
+  assert.deepEqual(preview.removed.map(item => item.dir), [old]);
+  assert.ok(existsSync(old), 'dry run deletes nothing');
+  const result = pruneRuns(state, { maxAgeMs: week, now });
+  assert.deepEqual(result.removed.map(item => item.dir), [old]);
+  assert.ok(!existsSync(old));
+  assert.deepEqual(Object.fromEntries(result.kept.map(item => [item.dir, item.reason])),
+    { [recent]: 'recent activity', [leased]: 'holds the checkout lease', [running]: 'a worker is still running' });
+  assert.deepEqual(pruneRuns(join(state, 'missing'), { maxAgeMs: week }), { removed: [], kept: [] });
 });

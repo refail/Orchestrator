@@ -11,8 +11,8 @@
     "coder": {
       "description": "Implementation specialist: makes the change, adds tests and runs checks.",
       "harness": "claude",
-      "model": null,
-      "effort": null,
+      "model": "claude-opus-5-5",
+      "effort": "high",
       "tools": "full",
       "web": false,
       "skills": [],
@@ -26,8 +26,10 @@
       "model": "openai/gpt-6.1-sol",
       "effort": null,
       "tools": "readonly",
-      "web": false,
-      "skills": [],
+      "web": true,
+      "skills": [
+        "code-review-and-quality"
+      ],
       "timeoutMinutes": 15,
       "exclusive": true,
       "diff": true
@@ -51,7 +53,9 @@
       "effort": "medium",
       "tools": "readonly",
       "web": false,
-      "skills": ["security-and-hardening"],
+      "skills": [
+        "security-and-hardening"
+      ],
       "timeoutMinutes": 15,
       "exclusive": true,
       "diff": true
@@ -63,7 +67,9 @@
       "effort": "medium",
       "tools": "edit",
       "web": false,
-      "skills": [],
+      "skills": [
+        "code-simplification"
+      ],
       "timeoutMinutes": 15,
       "exclusive": true,
       "diff": true

@@ -11,7 +11,9 @@ async function start(t, options = {}) {
   const root = copyRoot(t);
   const skillsDir = mkdtempSync(join(tmpdir(), 'herdr-skills-'));
   t.after(() => rmSync(skillsDir, { recursive: true, force: true }));
-  for (const name of ['security-and-hardening', 'code-review-and-quality']) {
+  // Every skill the copied agents.json uses, plus the one this test ticks.
+  const used = Object.values(JSON.parse(readFileSync(join(root, 'agents.json'), 'utf8')).agents).flatMap(agent => agent.skills);
+  for (const name of new Set([...used, 'security-and-hardening', 'code-review-and-quality'])) {
     mkdirSync(join(skillsDir, name));
     writeFileSync(join(skillsDir, name, 'SKILL.md'), `---\nname: ${name}\ndescription: ${name} skill.\n---\n`);
   }
@@ -41,7 +43,7 @@ test('the dashboard binds to localhost, needs its token, and rejects foreign hos
   const state = await (await api('GET', '/api/state')).json();
   assert.ok(state.config.agents.coder);
   assert.ok(state.prompts.coder.trim());
-  assert.deepEqual(state.skills.map(skill => skill.name), ['code-review-and-quality', 'security-and-hardening']);
+  assert.ok(state.skills.some(skill => skill.name === 'code-review-and-quality' && skill.description === 'code-review-and-quality skill.'));
 });
 
 test('saving from the dashboard writes agents.json and prompts, and refuses invalid input', async t => {
