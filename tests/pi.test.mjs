@@ -6,15 +6,16 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRun } from '../src/team.mjs';
-import { DEFAULT_CONFIG, piLaunch, TOOLS } from '../src/profiles.mjs';
+import { piLaunch, TOOLS } from '../src/profiles.mjs';
+import { DEFAULTS } from './fixtures/agents.mjs';
 
 const hasPi = spawnSync('pi', ['--version'], { encoding: 'utf8' }).status === 0;
 test('real Pi loads only our extension, keeps its tool allowlist across sessions, and blocks shell execution (no model calls)', { skip: !hasPi, timeout: 30_000 }, async t => {
   const root = mkdtempSync(join(tmpdir(), 'herdr-pi-rpc-'));
   mkdirSync(join(root, 'project'));
-  const run = createRun(join(root, 'state'), join(root, 'project'), 'w1', DEFAULT_CONFIG);
+  const run = createRun(join(root, 'state'), join(root, 'project'), 'w1', DEFAULTS);
   const plugin = fileURLToPath(new URL('../', import.meta.url));
-  const launch = piLaunch(plugin, run, DEFAULT_CONFIG);
+  const launch = piLaunch(plugin, run, DEFAULTS);
   const child = spawn(launch.command, [...launch.args, '--mode', 'rpc', '--offline', '--no-session'], {
     cwd: join(root, 'project'), env: { ...process.env, HERDR_ORCH_RUN: run }, stdio: ['pipe', 'pipe', 'pipe'],
   });

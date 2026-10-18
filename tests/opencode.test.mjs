@@ -7,7 +7,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'nod
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { workerLaunch, DEFAULT_CONFIG } from '../src/profiles.mjs';
+import { workerLaunch } from '../src/profiles.mjs';
+import { DEFAULTS } from './fixtures/agents.mjs';
 
 const version = spawnSync('opencode', ['--version'], { encoding: 'utf8' }).stdout?.trim();
 test('installed OpenCode v2 resolves isolated read-only profiles without model calls', { skip: !version, timeout: 30_000 }, async t => {
@@ -16,10 +17,11 @@ test('installed OpenCode v2 resolves isolated read-only profiles without model c
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, '.opencode', 'plugins'), { recursive: true });
   writeFileSync(join(root, '.opencode', 'plugins', 'trap.js'), 'throw new Error("Project plugins must not load in a worker");');
-  for (const role of ['reviewer', 'researcher', 'simplifier']) {
+  const profiles = { ...DEFAULTS.agents, runner: { ...DEFAULTS.agents.reviewer, tools: 'full', web: true } };
+  for (const role of ['reviewer', 'researcher', 'simplifier', 'runner']) {
     const configDir = join(root, role);
     mkdirSync(configDir);
-    const launch = workerLaunch(role, DEFAULT_CONFIG, 'brief', `Read-only ${role}.`, configDir);
+    const launch = workerLaunch(role, profiles[role], 'brief', `Read-only ${role}.`, configDir);
     const password = randomUUID();
     const child = spawn('opencode', ['serve', '--stdio', '--port', '0'], {
       cwd: root, env: { ...process.env, ...launch.env, PWD: root, OPENCODE_PASSWORD: password }, stdio: ['pipe', 'pipe', 'pipe'],
@@ -62,11 +64,12 @@ test('installed OpenCode v2 resolves isolated read-only profiles without model c
     const action = (tool, path = '*') => agent.permissions.findLast(rule =>
       (rule.action === tool || rule.action === '*') &&
       new RegExp(`^${rule.resource.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replaceAll('*', '.*')}$`).test(path))?.effect;
-    const writes = role === 'simplifier' ? [] : ['edit', 'write', 'patch'];
-    for (const tool of ['shell', 'bash', ...writes, 'subagent', 'skill', 'webfetch', 'browser', 'custom_mcp_tool', 'external_directory']) {
-      assert.equal(action(tool), 'deny', `${role}: ${tool}`);
+    const writes = ['simplifier', 'runner'].includes(role) ? [] : ['edit', 'write', 'patch'];
+    const granted = role === 'runner' ? ['shell', 'webfetch', 'websearch'] : [];
+    for (const tool of ['shell', 'bash', ...writes, 'subagent', 'skill', 'webfetch', 'websearch', 'browser', 'custom_mcp_tool', 'external_directory']) {
+      assert.equal(action(tool), granted.includes(tool) ? 'allow' : 'deny', `${role}: ${tool}`);
     }
-    if (role === 'simplifier') {
+    if (role === 'simplifier' || role === 'runner') {
       assert.equal(action('edit', 'src/index.js'), 'allow');
       assert.equal(action('edit', 'secrets.env'), 'deny');
     }

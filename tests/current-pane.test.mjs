@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { main } from '../src/cli.mjs';
 import { readRun, delegate, waitForTasks } from '../src/team.mjs';
 import { openPane } from '../src/herdr.mjs';
+import { snapshotAgents } from '../src/agents.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 test('foreground start refuses outside Herdr or without an interactive terminal', async () => {
@@ -20,9 +21,6 @@ test('foreground start uses this pane and cwd, saves its anchor, and delegates w
   for (const dir of ['project', 'bin', 'xdg-config', 'xdg-state']) mkdirSync(join(root, dir));
   const fake = readFileSync(new URL('./fixtures/cli.mjs', import.meta.url), 'utf8');
   for (const name of ['herdr', 'pi', 'opencode']) writeFileSync(join(root, 'bin', name), fake, { mode: 0o700 });
-  const configDir = join(root, 'xdg-config/herdr/plugins/config/personal.orchestrator');
-  mkdirSync(configDir, { recursive: true });
-  writeFileSync(join(configDir, 'config.json'), JSON.stringify({ maxParallel: 1 }));
   const env = { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, HERDR_ENV: '1', HERDR_SOCKET_PATH: join(root, 'socket'),
     HERDR_BIN_PATH: join(root, 'bin/herdr'), HERDR_PANE_ID: 'w1:p1', HERDR_WORKSPACE_ID: 'w1', HERDR_TAB_ID: 'w1:t1',
     XDG_CONFIG_HOME: join(root, 'xdg-config'), XDG_STATE_HOME: join(root, 'xdg-state'),
@@ -33,7 +31,7 @@ test('foreground start uses this pane and cwd, saves its anchor, and delegates w
   const run = readRun(runDir);
   assert.equal(run.project, join(root, 'project'));
   assert.equal(run.workspace, 'w1');
-  assert.equal(run.config.maxParallel, 1);
+  assert.deepEqual(run.config, snapshotAgents(), 'the run snapshots agents.json and its prompts');
   assert.ok(runDir.startsWith(join(root, 'xdg-state')));
   const receipt = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8'));
   assert.equal(receipt.pane.terminal_id, 'coordinator-terminal');

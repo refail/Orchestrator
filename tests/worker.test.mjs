@@ -5,15 +5,16 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRun, delegate, taskStatus } from '../src/team.mjs';
-import { DEFAULT_CONFIG, workerLaunch } from '../src/profiles.mjs';
+import { workerLaunch } from '../src/profiles.mjs';
+import { config as agents, DEFAULTS } from './fixtures/agents.mjs';
 import { runWorker, collectOutcome, hookOutcome } from '../src/worker.mjs';
 
 const AGENT = fileURLToPath(new URL('./fixtures/agent.mjs', import.meta.url));
-async function setup(t, role = 'researcher', config = {}) {
+async function setup(t, role = 'researcher', overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'herdr-orch-worker-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   mkdirSync(join(root, 'project'));
-  const run = createRun(join(root, 'state'), join(root, 'project'), 'w1', { ...DEFAULT_CONFIG, ...config });
+  const run = createRun(join(root, 'state'), join(root, 'project'), 'w1', agents(overrides));
   const task = await delegate(run, { role, title: 'Test', brief: 'Inspect the entrypoint' }, async () => ({ pane: {} }));
   return { run, task };
 }
@@ -24,7 +25,7 @@ function openCode(run, task, clientArgs, tui = join(task.directory, 'result.json
 }
 // Fake interactive Claude that runs the real Stop hook command from the profile.
 function claude(run, task, event, then = 'exit') {
-  const real = workerLaunch('coder', DEFAULT_CONFIG, 'Assignment: x', 'instructions');
+  const real = workerLaunch('coder', DEFAULTS.agents.coder, 'Assignment: x', 'instructions');
   return { command: process.execPath, args: [AGENT, 'claude', event, then, '--settings', real.args[real.args.indexOf('--settings') + 1]],
     env: { HERDR_ORCH_RUN: run, HERDR_ORCH_TASK: task.id } };
 }
@@ -141,7 +142,7 @@ test('cancellation stops the child and publishes interrupted, not completed', as
 });
 
 test('worker deadlines produce timed_out outcomes', async t => {
-  const { run, task } = await setup(t, 'researcher', { taskTimeoutMs: 1000 });
+  const { run, task } = await setup(t, 'researcher', { agents: { researcher: { timeoutMinutes: 1 / 60 } } });
   await runWorker(run, task.id, { launch: openCode(run, task, [AGENT, 'hang']), output: quiet });
   assert.equal(taskStatus(run, task.id).status, 'timed_out');
 });

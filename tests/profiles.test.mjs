@@ -1,9 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { DEFAULT_CONFIG, checkConfig, piLaunch, workerLaunch, TOOLS } from '../src/profiles.mjs';
+import { piLaunch, workerLaunch, TOOLS } from '../src/profiles.mjs';
+import { DEFAULTS } from './fixtures/agents.mjs';
+
+const A = DEFAULTS.agents;
 
 test('Pi uses the requested model/high reasoning and only coordination tools', () => {
-  const { command, args } = piLaunch('/plugin', '/state/run', DEFAULT_CONFIG);
+  const { command, args } = piLaunch('/plugin', '/state/run', DEFAULTS);
   assert.equal(command, 'pi');
   assert.equal(args[args.indexOf('--model') + 1], 'openai-codex/gpt-6.1-sol');
   assert.equal(args[args.indexOf('--thinking') + 1], 'high');
@@ -12,11 +15,15 @@ test('Pi uses the requested model/high reasoning and only coordination tools', (
     assert.ok(args.includes(flag), flag);
   }
   assert.ok(args.includes('/plugin/pi/orchestrator.ts'));
+  assert.equal(args[args.indexOf('--system-prompt') + 1], '/state/run/orchestrator.md', 'the run snapshot, not the editable file');
+  const low = piLaunch('/plugin', '/state/run', { ...DEFAULTS, orchestrator: { model: 'anthropic/claude-opus-5-5', thinking: 'low' } }).args;
+  assert.equal(low[low.indexOf('--model') + 1], 'anthropic/claude-opus-5-5');
+  assert.equal(low[low.indexOf('--thinking') + 1], 'low');
 });
 
 test('OpenCode roles select exact models and deny shell, writes, nested agents and MCP tools', () => {
   for (const role of ['reviewer', 'researcher']) {
-    const launch = workerLaunch(role, DEFAULT_CONFIG, 'brief', 'role instructions', '/private-config');
+    const launch = workerLaunch(role, A[role], 'brief', 'role instructions', '/private-config');
     assert.equal(launch.command, 'opencode');
     assert.equal(launch.input, 'brief');
     // Private localhost server, a headless client for the report, and a TUI on the same session.
@@ -38,7 +45,7 @@ test('OpenCode roles select exact models and deny shell, writes, nested agents a
     }
     assert.ok(launch.env.OPENCODE_PASSWORD.length >= 32);
     assert.equal(launch.env.OPENCODE_SERVER_PASSWORD, launch.env.OPENCODE_PASSWORD);
-    assert.notEqual(workerLaunch(role, DEFAULT_CONFIG, 'b', 'i', '/c').env.OPENCODE_PASSWORD, launch.env.OPENCODE_PASSWORD);
+    assert.notEqual(workerLaunch(role, A[role], 'b', 'i', '/c').env.OPENCODE_PASSWORD, launch.env.OPENCODE_PASSWORD);
     assert.equal(launch.env.OPENCODE_CONFIG_DIR, '/private-config');
     assert.equal(launch.env.OPENCODE_CONFIG_PROJECT_DISABLE, 'true');
     const config = JSON.parse(launch.env.OPENCODE_CONFIG_CONTENT);
@@ -55,7 +62,7 @@ test('OpenCode roles select exact models and deny shell, writes, nested agents a
 });
 
 test('Claude runs its interactive TUI with normal permissions, a completion hook and its default model', () => {
-  const launch = workerLaunch('coder', DEFAULT_CONFIG, 'Assignment: brief', 'role instructions');
+  const launch = workerLaunch('coder', A.coder, 'Assignment: brief', 'role instructions');
   assert.equal(launch.command, 'claude');
   assert.equal(launch.args.at(-1), 'Assignment: brief');
   for (const flag of ['--print', '-p', '--output-format', '--dangerously-skip-permissions', '--model', '--permission-prompts']) {
@@ -66,11 +73,12 @@ test('Claude runs its interactive TUI with normal permissions, a completion hook
   assert.equal(launch.args[launch.args.indexOf('--append-system-prompt') + 1], 'role instructions');
   const { hooks } = JSON.parse(launch.args[launch.args.indexOf('--settings') + 1]);
   for (const event of ['Stop', 'StopFailure']) assert.match(hooks[event][0].hooks[0].command, /'[^']*\/src\/cli\.mjs' claude-hook$/);
-  assert.equal(workerLaunch('coder', { ...DEFAULT_CONFIG, coderModel: 'sonnet' }, 'Assignment: b', 'i').args.at(-2), 'sonnet');
+  assert.equal(launch.args[launch.args.indexOf('--tools') + 1], 'Read,Edit,Write,Glob,Grep,Bash');
+  assert.equal(workerLaunch('coder', { ...A.coder, model: 'sonnet' }, 'Assignment: b', 'i').args.at(-2), 'sonnet');
 });
 
 test('security runs read-only Claude on Opus 5.5 with medium effort', () => {
-  const { command, args } = workerLaunch('security', DEFAULT_CONFIG, 'Assignment: audit', 'role instructions');
+  const { command, args } = workerLaunch('security', A.security, 'Assignment: audit', 'role instructions');
   assert.equal(command, 'claude');
   assert.equal(args.at(-1), 'Assignment: audit');
   assert.equal(args[args.indexOf('--model') + 1], 'claude-opus-5-5');
@@ -80,11 +88,11 @@ test('security runs read-only Claude on Opus 5.5 with medium effort', () => {
   assert.ok(args.includes('--strict-mcp-config'));
   const { hooks } = JSON.parse(args[args.indexOf('--settings') + 1]);
   assert.match(hooks.Stop[0].hooks[0].command, /claude-hook$/);
-  assert.ok(!workerLaunch('coder', DEFAULT_CONFIG, 'Assignment: b', 'i').args.includes('--effort'));
+  assert.ok(!workerLaunch('coder', A.coder, 'Assignment: b', 'i').args.includes('--effort'));
 });
 
 test('simplifier runs OpenCode gpt-6.1-sol medium and may edit, but not shell or .env files', () => {
-  const launch = workerLaunch('simplifier', DEFAULT_CONFIG, 'brief', 'role instructions', '/private-config');
+  const launch = workerLaunch('simplifier', A.simplifier, 'brief', 'role instructions', '/private-config');
   assert.equal(launch.command, 'opencode');
   const run = launch.run('http://127.0.0.1:1234');
   assert.equal(run[run.indexOf('--model') + 1], 'openai/gpt-6.1-sol#medium');
@@ -95,18 +103,23 @@ test('simplifier runs OpenCode gpt-6.1-sol medium and may edit, but not shell or
   assert.ok(rules.some(rule => rule.action === 'edit' && rule.resource === '*.env' && rule.effect === 'deny'));
   assert.ok(!rules.some(rule => rule.action === 'shell' || (rule.action === '*' && rule.effect === 'allow')));
   for (const role of ['reviewer', 'researcher']) {
-    const other = JSON.parse(workerLaunch(role, DEFAULT_CONFIG, 'b', 'i', '/c').env.OPENCODE_CONFIG_CONTENT).agents[`personal-${role}`];
+    const other = JSON.parse(workerLaunch(role, A[role], 'b', 'i', '/c').env.OPENCODE_CONFIG_CONTENT).agents[`personal-${role}`];
     assert.ok(!other.permissions.some(rule => rule.action === 'edit' && rule.effect === 'allow'), role);
   }
 });
 
-test('configuration and role validation fail closed', () => {
-  assert.throws(() => checkConfig({ maxParallel: 0 }), /maxParallel/);
-  assert.throws(() => checkConfig({ unknown: true }), /Unknown/);
-  assert.throws(() => checkConfig({ toString: true }), /Unknown/);
-  assert.throws(() => checkConfig({ reviewerModel: '--bad' }), /reviewerModel/);
-  assert.throws(() => checkConfig({ securityModel: null }), /securityModel/);
-  assert.equal(checkConfig({ simplifierModel: 'openai/gpt-6.1-sol#high' }).simplifierModel, 'openai/gpt-6.1-sol#high');
-  assert.throws(() => workerLaunch('shell', DEFAULT_CONFIG, '', ''), /Unknown role/);
-  assert.throws(() => workerLaunch('researcher', DEFAULT_CONFIG, 'brief', 'instructions'), /config directory/);
+test('tool presets and web access map to each harness', () => {
+  const claudeTools = agent => { const { args } = workerLaunch('x', agent, 'Assignment: b', 'i'); return args[args.indexOf('--tools') + 1]; };
+  assert.equal(claudeTools({ ...A.security, tools: 'edit' }), 'Read,Edit,Write,Glob,Grep');
+  assert.equal(claudeTools({ ...A.security, web: true }), 'Read,Glob,Grep,WebFetch,WebSearch');
+  assert.equal(workerLaunch('x', { ...A.security, tools: 'edit' }, 'Assignment: b', 'i').args[1], 'acceptEdits');
+  const allowed = agent => JSON.parse(workerLaunch('runner', agent, 'b', 'i', '/c').env.OPENCODE_CONFIG_CONTENT)
+    .agents['personal-runner'].permissions.filter(rule => rule.effect === 'allow' && rule.resource === '*').map(rule => rule.action);
+  assert.deepEqual(allowed({ ...A.reviewer, tools: 'full', web: true }), ['read', 'glob', 'grep', 'edit', 'shell', 'webfetch', 'websearch']);
+  assert.deepEqual(allowed(A.reviewer), ['read', 'glob', 'grep']);
+});
+
+test('unknown roles and missing OpenCode config directories fail closed', () => {
+  assert.throws(() => workerLaunch('shell', undefined, '', ''), /Unknown role/);
+  assert.throws(() => workerLaunch('researcher', A.researcher, 'brief', 'instructions'), /config directory/);
 });

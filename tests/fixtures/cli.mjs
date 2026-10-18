@@ -34,6 +34,7 @@ if (name === 'herdr') {
 } else if (name === 'claude') {
   // Interactive TUI: the brief is the last argument; completion goes through the Stop hook.
   if (!args.at(-1).startsWith('Assignment:')) process.exit(2);
+  fs.writeFileSync(path.join(root, 'claude-args.json'), JSON.stringify(args));
   fs.writeFileSync('change.txt', 'fake coder change');
   const { command } = JSON.parse(args[args.indexOf('--settings') + 1]).hooks.Stop[0].hooks[0];
   require('node:child_process').spawnSync('sh', ['-c', command], {

@@ -4,20 +4,21 @@ A local Herdr **0.7.1** plugin. Talk to Pi about one feature; it delegates proje
 work to visible specialist tabs. No third-party orchestration package, service,
 new npm dependencies, or global agent configuration changes.
 
-| Role | Harness | Model |
-| --- | --- | --- |
-| Orchestrator | Pi | `openai-codex/gpt-6.1-sol`, **high** reasoning |
-| Coding/testing | Claude Code | Your configured Claude default |
-| Independent review | OpenCode | `openai/gpt-6.1-sol` |
-| Project research | OpenCode | `openai/gpt-5.6-sol` |
-| Security audit | Claude Code | `claude-opus-5-5`, **medium** effort |
-| Simplification | OpenCode | `openai/gpt-6.1-sol#medium` (medium reasoning) |
+The team is defined in [`agents.json`](agents.json), with one prompt per agent in
+`prompts/<name>.md`. Edit both from the **settings page** (below) or by hand. The
+shipped team:
 
-Security tasks always follow the `security-and-hardening` skill, in addition to any
-skills Pi passes. The security agent is read-only (Read/Glob/Grep). The simplifier
-can edit project files but cannot run shell commands or tests, so Pi should have a
-coder run checks afterwards. Security and simplifier tasks get the same git
-diff snapshot as review.
+| Agent | Harness | Model | Tools |
+| --- | --- | --- | --- |
+| Orchestrator | Pi | `openai-codex/gpt-6.1-sol`, **high** thinking | coordination only |
+| coder | Claude Code | Your configured Claude default | edit + commands |
+| reviewer | OpenCode | `openai/gpt-6.1-sol` | read-only, gets the diff |
+| researcher | OpenCode | `openai/gpt-5.6-sol` | read-only, runs alongside others |
+| security | Claude Code | `claude-opus-5-5`, **medium** effort | read-only, gets the diff, always `security-and-hardening` |
+| simplifier | OpenCode | `openai/gpt-6.1-sol`, **medium** variant | edit, no commands, gets the diff |
+
+The simplifier can edit project files but cannot run shell commands or tests, so Pi
+should have a coder run checks afterwards.
 
 Pi has only `team_delegate`, `team_status`, `team_wait`, and `team_skill`. Built-in
 tools, other extensions, MCP, project context files, Pi's own skill discovery, and
@@ -34,6 +35,30 @@ delegated. `team_delegate` takes up to four `skills`; their text is snapshotted
 to the task's `skills.md` and appended to the worker's system prompt (Claude
 `--append-system-prompt`, OpenCode agent `system`), so the visible prompt stays
 the brief. Role permissions still win over skill instructions.
+
+## Settings page
+
+```sh
+node ~/dotfiles/herdr/plugins/orchestrator/src/cli.mjs dashboard
+```
+
+or the Herdr action **Open orchestrator settings** (`personal.orchestrator.settings`).
+It opens a local page in your browser where you can add, edit and delete agents:
+name, "when to use" description (shown to Pi), harness, model, reasoning effort,
+tools preset (read-only / can edit / can edit and run commands), web access,
+default skills (ticked from `~/.agents/skills`), timeout, checkout locking, git
+diff, and prompt. The orchestrator's model, thinking level, prompt and run limits
+are on the same page. Saving validates everything and writes `agents.json` and the
+prompt files; deleting an agent removes its prompt file (git keeps history).
+
+It only runs while you use it: a tiny Node server on `127.0.0.1` with a random port
+and a one-time token in the link. It stops when you close the tab, after 3 idle
+minutes, or on Ctrl+C. Requests from other hosts or origins are refused.
+
+Each new feature run snapshots the agents and prompts into its `run.json` and
+`orchestrator.md` (Pi's prompt plus a generated "Your specialists" list), so edits
+never change a run that is already going. Agents that edit files always hold the
+checkout lease.
 
 ## Install
 
@@ -143,8 +168,8 @@ again makes a new feature run; it does not replace or stop old agents.
 - Workers run in your **shared checkout**, not isolated worktrees. Preserve your
   own changes; don't run unrelated writers simultaneously. Review snapshots can
   be incomplete (untracked files, oversized diffs, repositories without HEAD).
-- Default limits: 3 concurrent assignments per run, 30 total tasks, 15 minutes per
-  worker, and 8 MiB of captured output. Reports passed to Pi are capped at 32,000
+- Default limits: 3 concurrent assignments per run, 30 total tasks, a per-agent
+  timeout (30 minutes for the coder, 15 for the others), and 8 MiB of captured output. Reports passed to Pi are capped at 32,000
   characters. There is no total dollar budget or automatic remote cost control.
 - Pi waits for task records, not Herdr's idle detection. Interrupting Pi's wait
   does **not** stop workers. To stop a worker, quit its TUI (Ctrl+C belongs to
@@ -153,10 +178,13 @@ again makes a new feature run; it does not replace or stop old agents.
   group so it can own the terminal; closing the pane stops it. Deliberately
   detached processes are outside this cooperative boundary.
 - Hard-killing a runner, closing panes, or ambiguous API failures can leave an
-  unresolved attempt and checkout lease. Never blindly retry or delete the lease:
-  inspect the exact task/logs and verify all its processes have stopped first.
-  There is no automatic stale-lock recovery or branch cleanup in v1; only
-  completed panes are closed automatically.
+  unresolved attempt and checkout lease. Never delete the lease by hand: inspect
+  the exact task/logs, then run
+  `node src/cli.mjs recover RUN_DIR TASK_ID`. It records `interrupted` and
+  releases the lease when the runner process is gone (`unknown`); for any other
+  state, first close the pane and check no agent processes remain, then add
+  `--confirm`. A dispatch lock left by a crashed process is replaced
+  automatically. Only completed panes are closed automatically.
 - Workspace numbers can change. Worker placement resolves the coordinator's
   recorded stable terminal ID before launching, rather than trusting an old
   workspace number. If that terminal disappears, dispatch refuses to continue.
@@ -166,17 +194,11 @@ again makes a new feature run; it does not replace or stop old agents.
 
 ## Configuration
 
-Defaults are built in. Optional overrides go in `config.json` under the directory
-printed by:
-
-```sh
-herdr plugin config-dir personal.orchestrator
-```
-
-Use `config.example.json` as a reference; include only the keys you want to change.
-For example, `{"coderModel":"sonnet","maxParallel":2}`. New feature runs snapshot
-the current configuration; existing runs keep their original settings. Store no
-credentials in this file. Existing CLI authentication is used unchanged.
+Everything lives in `agents.json` and `prompts/` in this directory (see
+**Settings page**). Store no credentials there; existing CLI authentication is used
+unchanged. The older `config.json` in Herdr's plugin config directory is no longer
+read. Runs created before `agents.json` still show in status and `inspect`, but
+cannot dispatch new workers; start a new feature run.
 
 ## Records and troubleshooting
 

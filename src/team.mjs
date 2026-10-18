@@ -1,8 +1,8 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdirSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, rmdirSync, readdirSync } from 'node:fs';
+import { mkdirSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, rmSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { checkConfig, ROLES, ROLE_SKILLS } from './profiles.mjs';
+import { checkSnapshot, teamSection, NAME } from './agents.mjs';
 import { loadSkill, SKILLS_DIR } from './skills.mjs';
 
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -17,6 +17,7 @@ export function publish(path, value) {
   writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600, flag: 'wx' });
   try { linkSync(temp, path); } finally { unlinkSync(temp); }
 }
+// `config` is a snapshotAgents() value: agent settings plus prompt text.
 export function createRun(stateRoot, project, workspace, config) {
   if (typeof workspace !== 'string' || !workspace) throw new Error('Missing workspace identity');
   project = realpathSync(project);
@@ -25,14 +26,18 @@ export function createRun(stateRoot, project, workspace, config) {
   stateRoot = realpathSync(stateRoot);
   const id = randomUUID();
   const runDir = join(stateRoot, 'runs', id);
+  config = checkSnapshot(config);
   mkdirSync(join(runDir, 'tasks'), { recursive: true, mode: 0o700 });
-  publish(join(runDir, 'run.json'), { id, stateRoot, project, workspace, config: checkConfig(config), createdAt: new Date().toISOString() });
+  writeFileSync(join(runDir, 'orchestrator.md'), `${config.prompts.orchestrator.trimEnd()}\n\n${teamSection(config)}`, { mode: 0o600, flag: 'wx' });
+  publish(join(runDir, 'run.json'), { id, stateRoot, project, workspace, config, createdAt: new Date().toISOString() });
   return runDir;
 }
 export function readRun(runDir) {
   const run = json(join(runDir, 'run.json'));
   if (!ID.test(run.id) || realpathSync(runDir) !== join(realpathSync(run.stateRoot), 'runs', run.id)) throw new Error('Invalid run directory identity');
-  run.config = checkConfig(run.config);
+  // Runs from before agents.json stay readable for status/inspect only.
+  if (run.config?.agents) run.config = checkSnapshot(run.config);
+  else run.legacy = true;
   return run;
 }
 export function taskDir(runDir, id) {
@@ -41,22 +46,23 @@ export function taskDir(runDir, id) {
 }
 export function readTask(runDir, id) {
   const task = json(join(taskDir(runDir, id), 'task.json'));
-  if (task.id !== id || !ROLES.includes(task.role)) throw new Error('Invalid task record');
+  if (task.id !== id || typeof task.role !== 'string' || !NAME.test(task.role)) throw new Error('Invalid task record');
   return task;
 }
 function leasePath(run) {
   return join(run.stateRoot, 'leases', `${createHash('sha256').update(run.project).digest('hex')}.json`);
 }
 export function finishTask(runDir, id, outcome) {
-  const task = readTask(runDir, id);
+  readTask(runDir, id);
   const run = readRun(runDir);
   if (!TERMINAL.includes(outcome.status) || typeof outcome.text !== 'string') throw new Error('Invalid worker outcome');
   publish(join(taskDir(runDir, id), 'result.json'), { ...outcome, taskId: id, finishedAt: new Date().toISOString() });
-  if (task.role !== 'researcher') {
-    const path = leasePath(run);
-    const lease = optionalJson(path);
-    if (lease?.taskId === id && lease.runDir === runDir) unlinkSync(path);
-  }
+  const path = leasePath(run);
+  const lease = optionalJson(path);
+  if (lease?.taskId === id && lease.runDir === runDir) unlinkSync(path);
+}
+function alive(pid) {
+  try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; }
 }
 export function taskStatus(runDir, id, full = false) {
   const task = readTask(runDir, id);
@@ -66,16 +72,44 @@ export function taskStatus(runDir, id, full = false) {
   const started = optionalJson(join(dir, 'started.json'));
   const uncertain = optionalJson(join(dir, 'launch-error.json'));
   let status = result?.status ?? (started ? 'running' : uncertain ? 'launch_uncertain' : 'starting');
-  if (!result && started) {
-    try { process.kill(started.pid, 0); } catch (error) { if (error.code === 'ESRCH') status = 'unknown'; else if (error.code !== 'EPERM') throw error; }
-  }
-  return { id, role: task.role, title: task.title, status, finished: Boolean(result),
+  if (!result && started && !alive(started.pid)) status = 'unknown';
+  return { id, role: task.role, title: task.title, status, finished: Boolean(result), createdAt: task.createdAt,
     report: result ? result.text.slice(0, full ? 32_000 : 500) : undefined,
     detail: uncertain?.message, directory: dir };
 }
 export function listTasks(runDir, full = false) {
   readRun(runDir);
-  return readdirSync(join(runDir, 'tasks')).filter(id => ID.test(id)).map(id => taskStatus(runDir, id, full));
+  return readdirSync(join(runDir, 'tasks')).filter(id => ID.test(id)).map(id => taskStatus(runDir, id, full))
+    .sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt)));
+}
+// Owner-driven recovery for a worker whose runner was lost (hard kill, closed
+// pane). Records `interrupted` and releases its checkout lease. Anything other
+// than a provably dead runner needs explicit confirmation.
+export function recoverTask(runDir, id, { confirmed = false } = {}) {
+  const status = taskStatus(runDir, id);
+  if (status.finished) throw new Error(`Task is already ${status.status}; nothing to recover`);
+  if (status.status !== 'unknown' && !confirmed) {
+    throw new Error(`Task is ${status.status}, so its worker may still be running. Close its pane, check that no agent processes remain, then rerun with --confirm`);
+  }
+  finishTask(runDir, id, { status: 'interrupted', text: `Recovered by the owner after the worker was lost (was ${status.status}).` });
+  return taskStatus(runDir, id);
+}
+// Short-lived global dispatch lock. A lock left by a crashed process (dead
+// owner, or no owner recorded for a minute) is replaced once.
+function acquireLock(lock) {
+  for (let attempt = 0; ; attempt++) {
+    try { mkdirSync(lock, { mode: 0o700 }); writeFileSync(join(lock, 'owner'), String(process.pid)); return; } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      if (attempt || !staleLock(lock)) throw new Error('Another dispatch is in progress; inspect status before retrying');
+      rmSync(lock, { recursive: true, force: true });
+    }
+  }
+}
+function staleLock(lock) {
+  let pid;
+  try { pid = Number(readFileSync(join(lock, 'owner'), 'utf8')); } catch (error) { if (error.code !== 'ENOENT') throw error; }
+  if (Number.isInteger(pid) && pid > 0) return !alive(pid);
+  try { return Date.now() - statSync(lock).mtimeMs > 60_000; } catch (error) { if (error.code === 'ENOENT') return false; throw error; }
 }
 function text(value, name, max) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || value.includes('\0')) throw new Error(`Invalid ${name} (1–${max} characters)`);
@@ -83,12 +117,14 @@ function text(value, name, max) {
 }
 export async function delegate(runDir, input, openPane, { skillsDir = SKILLS_DIR } = {}) {
   const run = readRun(runDir);
-  if (!ROLES.includes(input.role)) throw new Error('Invalid role');
+  if (run.legacy) throw new Error('This run was created by an older plugin version; start a new feature run');
+  const agent = Object.hasOwn(run.config.agents, input.role) ? run.config.agents[input.role] : null;
+  if (!agent) throw new Error(`Invalid role; use one of ${Object.keys(run.config.agents).join(', ')}`);
   text(input.title, 'title', 100);
   text(input.brief, 'brief', 16_000);
   const requested = input.skills ?? [];
   if (!Array.isArray(requested) || requested.length > 4 || new Set(requested).size !== requested.length) throw new Error('Invalid skills (at most 4 distinct names)');
-  const skills = [...new Set([...(ROLE_SKILLS[input.role] ?? []), ...requested])];
+  const skills = [...new Set([...agent.skills, ...requested])];
   // Snapshot skill text now so the worker gets exactly what was validated.
   const skillText = skills.map(name => `<skill name="${name}">\n${loadSkill(name, skillsDir)}\n</skill>`).join('\n\n');
   let context = '';
@@ -97,21 +133,22 @@ export async function delegate(runDir, input, openPane, { skillsDir = SKILLS_DIR
     if (!prior.finished) throw new Error('Previous task is not finished');
     context = `Previous assignment:\n${readTask(runDir, input.previousTask).brief}\nPrevious report (${prior.status}):\n${prior.report}`;
   }
-  // Short-lived global dispatch lock serializes admission and checkout leases.
+  // The dispatch lock serializes admission and checkout leases.
   const lock = join(run.stateRoot, 'dispatch.lock');
-  try { mkdirSync(lock, { mode: 0o700 }); } catch (error) {
-    if (error.code === 'EEXIST') throw new Error('Another dispatch is in progress; inspect status before retrying');
-    throw error;
-  }
+  acquireLock(lock);
   try {
     const tasks = listTasks(runDir);
-    if (tasks.length >= run.config.maxTasks) throw new Error('Run task limit reached');
-    if (tasks.filter(task => !task.finished).length >= run.config.maxParallel) throw new Error('Parallel task limit reached');
+    if (tasks.length >= run.config.limits.maxTasks) throw new Error('Run task limit reached');
+    if (tasks.filter(task => !task.finished).length >= run.config.limits.maxParallel) throw new Error('Parallel task limit reached');
     const id = randomUUID();
     let leased = false;
-    if (input.role !== 'researcher') {
+    if (agent.exclusive) {
       try { publish(leasePath(run), { runDir, taskId: id, role: input.role }); leased = true; }
-      catch (error) { if (error.code === 'EEXIST') throw new Error(`Checkout is busy with a coder/reviewer/security/simplifier; inspect ${leasePath(run)}`); throw error; }
+      catch (error) {
+        if (error.code !== 'EEXIST') throw error;
+        const holder = optionalJson(leasePath(run));
+        throw new Error(`Checkout is busy with ${holder?.role ?? 'another'} task ${holder?.taskId ?? ''}; wait for it, or inspect ${leasePath(run)}`);
+      }
     }
     const dir = taskDir(runDir, id);
     try {
@@ -133,7 +170,7 @@ export async function delegate(runDir, input, openPane, { skillsDir = SKILLS_DIR
       throw new Error(`Worker launch uncertain for ${id}; inspect team_status before doing anything else. Do not duplicate this assignment.`);
     }
     return taskStatus(runDir, id);
-  } finally { rmdirSync(lock); }
+  } finally { rmSync(lock, { recursive: true, force: true }); }
 }
 // Close collected panes of successful workers. Unsuccessful ones stay open for
 // inspection. Closing is best-effort and never changes a recorded outcome.

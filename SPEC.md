@@ -78,7 +78,7 @@ herdr-plugin.toml       # start and status actions
 src/                   # runtime, Herdr adapter, worker adapters
 pi/                    # dedicated coordination-only extension
 prompts/               # orchestrator and specialist instructions
-config.example.json    # non-secret model and role defaults
+agents.json            # editable agent team (settings page writes it)
 tests/                 # Node unit/integration tests using fake CLIs
 start.sh               # foreground coordinator in the invoking Herdr terminal
 README.md              # setup, usage, limitations, uninstall
@@ -192,3 +192,19 @@ report, keeping unsuccessful panes; skills for Pi and workers.
 - Verified without model calls: real OpenCode 2.0.30 server/client/TUI attach to
   a pre-chosen session, and real Pi loads the four-tool extension. Live Claude
   hook behavior and streaming in the attached OpenCode TUI need the owner smoke.
+
+## Agents file and settings page
+
+Owner request: a simple dashboard to edit agents, prompts, models and skills,
+including adding and deleting agents, stored in JSON files (no database), running
+only on demand. Decisions:
+
+- `agents.json` (orchestrator model/thinking, limits, and named agents with
+  harness, model, effort, tools preset, web, skills, timeout, exclusive, diff) plus
+  `prompts/<name>.md`. Roles are no longer hardcoded anywhere in the code.
+- Runs snapshot settings and prompt text into `run.json`; Pi's prompt gets a
+  generated specialist list and `team_delegate` offers exactly those role names.
+- Settings page: stdlib HTTP server on 127.0.0.1, random port, token in the URL
+  fragment, Host/Origin checks, exits on tab close/idle/Ctrl+C. No dependencies.
+- Agents that edit files must hold the checkout lease. Web access is off by
+  default and an explicit per-agent choice.

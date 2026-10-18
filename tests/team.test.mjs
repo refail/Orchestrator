@@ -3,16 +3,16 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRun, delegate, taskStatus, listTasks, finishTask, waitForTasks, readTask } from '../src/team.mjs';
-import { DEFAULT_CONFIG } from '../src/profiles.mjs';
+import { createRun, delegate, taskStatus, listTasks, finishTask, waitForTasks, readTask, readRun, recoverTask } from '../src/team.mjs';
+import { config as agents, DEFAULTS } from './fixtures/agents.mjs';
 
-function fixture(t, config = {}) {
+function fixture(t, overrides = {}) {
   const root = mkdtempSync(join(tmpdir(), 'herdr-orch-test-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   const project = join(root, 'project with spaces');
   mkdirSync(project);
   const state = join(root, 'state');
-  const run = createRun(state, project, 'w1', { ...DEFAULT_CONFIG, ...config });
+  const run = createRun(state, project, 'w1', agents(overrides));
   return { root, project, state, run };
 }
 const openPane = async () => ({ pane: { pane_id: 'w1:p2' } });
@@ -35,7 +35,7 @@ test('delegation publishes a brief as data and targets the saved workspace', asy
 
 test('a checkout lease prevents overlapping writers and review, including across runs', async t => {
   const { run, state, project } = fixture(t);
-  const other = createRun(state, project, 'w2', DEFAULT_CONFIG);
+  const other = createRun(state, project, 'w2', DEFAULTS);
   const coder = await delegate(run, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane);
   await assert.rejects(delegate(other, { role: 'coder', title: 'Other', brief: 'Implement' }, openPane), /checkout.*busy/i);
   await assert.rejects(delegate(other, { role: 'reviewer', title: 'Review', brief: 'Review' }, openPane), /checkout.*busy/i);
@@ -55,7 +55,7 @@ test('ambiguous launch failures stay unresolved and keep the checkout lease', as
 });
 
 test('task bounds and input validation happen before any pane launch', async t => {
-  const { run } = fixture(t, { maxParallel: 1 });
+  const { run } = fixture(t, { limits: { maxParallel: 1 } });
   await assert.rejects(delegate(run, { role: 'shell', title: 'Bad', brief: 'bad' }, openPane), /role/i);
   await assert.rejects(delegate(run, { role: 'coder', title: 'Bad', brief: '' }, openPane), /brief/i);
   await delegate(run, { role: 'researcher', title: 'Find', brief: 'Find' }, openPane);
@@ -84,7 +84,7 @@ test('waiting is bounded and aborting it does not cancel workers', async t => {
 });
 
 test('concurrent dispatch cannot exceed the configured parallel limit', async t => {
-  const { run } = fixture(t, { maxParallel: 1 });
+  const { run } = fixture(t, { limits: { maxParallel: 1 } });
   const results = await Promise.allSettled([0, 1].map(i => delegate(run, { role: 'researcher', title: `Find ${i}`, brief: 'Find' }, openPane)));
   assert.equal(results.filter(r => r.status === 'fulfilled').length, 1);
   assert.equal(listTasks(run).length, 1);
@@ -151,4 +151,72 @@ test('collected panes of completed workers close once; failed ones stay open', a
   const [failure] = await waitForTasks(run, [retry.id], 10, undefined, async () => { throw new Error('Herdr unavailable'); });
   assert.equal(failure.status, 'completed', 'a failed close never changes the outcome');
   assert.match(failure.closeError, /unavailable/);
+});
+
+test('runs snapshot their agents: custom roles dispatch, leases follow `exclusive`, and later edits do not leak in', async t => {
+  const { run, state, project } = fixture(t, {
+    agents: { docs: { description: 'Writes documentation', harness: 'claude', model: null, effort: null, tools: 'edit', web: true,
+      skills: [], timeoutMinutes: 5, exclusive: true, diff: false }, researcher: null },
+    prompts: { docs: 'Write docs.' },
+  });
+  const snapshot = readRun(run).config;
+  assert.deepEqual(Object.keys(snapshot.agents), ['coder', 'reviewer', 'security', 'simplifier', 'docs']);
+  assert.equal(snapshot.prompts.docs, 'Write docs.');
+  const team = readFileSync(join(run, 'orchestrator.md'), 'utf8');
+  assert.match(team, /^Coordinate\./);
+  assert.match(team, /\*\*docs\*\* — Writes documentation \(can read and edit files.*has web access.*5 min\)/);
+  assert.doesNotMatch(team, /researcher/);
+  await assert.rejects(delegate(run, { role: 'researcher', title: 'Find', brief: 'Find' }, openPane), /Invalid role; use one of coder, reviewer/);
+  const docs = await delegate(run, { role: 'docs', title: 'Docs', brief: 'Write' }, openPane);
+  await assert.rejects(delegate(run, { role: 'reviewer', title: 'Review', brief: 'Review' }, openPane), /busy with docs task/);
+  finishTask(run, docs.id, { status: 'completed', text: 'Done' });
+  // A run started with different settings keeps its own.
+  const other = createRun(state, project, 'w1', agents({ agents: { reviewer: { exclusive: false } } }));
+  const first = await delegate(other, { role: 'reviewer', title: 'Review A', brief: 'Review' }, openPane);
+  assert.ok(first.id);
+  assert.ok((await delegate(run, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane)).id, 'a non-exclusive reviewer holds no lease');
+});
+
+test('runs from before agents.json stay readable but cannot dispatch', async t => {
+  const { run } = fixture(t);
+  const legacy = JSON.parse(readFileSync(join(run, 'run.json'), 'utf8'));
+  legacy.config = { orchestratorModel: 'openai-codex/gpt-6.1-sol', maxParallel: 3 };
+  rmSync(join(run, 'run.json'));
+  writeFileSync(join(run, 'run.json'), JSON.stringify(legacy));
+  assert.equal(readRun(run).legacy, true);
+  assert.deepEqual(listTasks(run), []);
+  await assert.rejects(delegate(run, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane), /older plugin version/);
+});
+
+test('a dispatch lock left by a dead process is replaced; a live one still blocks', async t => {
+  const { run, state } = fixture(t);
+  mkdirSync(join(state, 'dispatch.lock'));
+  writeFileSync(join(state, 'dispatch.lock', 'owner'), '2147483647');
+  assert.ok((await delegate(run, { role: 'researcher', title: 'Find', brief: 'Find' }, openPane)).id);
+  mkdirSync(join(state, 'dispatch.lock'));
+  writeFileSync(join(state, 'dispatch.lock', 'owner'), String(process.pid));
+  await assert.rejects(delegate(run, { role: 'researcher', title: 'Other', brief: 'Find' }, openPane), /Another dispatch/);
+});
+
+test('recovering a lost worker records interrupted and frees the checkout; live ones need confirmation', async t => {
+  const { run } = fixture(t);
+  const lost = await delegate(run, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane);
+  assert.throws(() => recoverTask(run, lost.id), /--confirm/);
+  writeFileSync(join(run, 'tasks', lost.id, 'started.json'), JSON.stringify({ pid: 2147483647 }));
+  assert.equal(recoverTask(run, lost.id).status, 'interrupted');
+  assert.throws(() => recoverTask(run, lost.id), /already interrupted/);
+  const next = await delegate(run, { role: 'coder', title: 'Again', brief: 'Implement' }, openPane);
+  assert.equal(recoverTask(run, next.id, { confirmed: true }).status, 'interrupted');
+});
+
+test('tasks are listed in creation order', async t => {
+  const { run } = fixture(t);
+  const ids = [];
+  for (const title of ['One', 'Two', 'Three']) {
+    const task = await delegate(run, { role: 'researcher', title, brief: 'Find' }, openPane);
+    finishTask(run, task.id, { status: 'completed', text: 'Done' });
+    ids.push(task.id);
+    await new Promise(resolve => setTimeout(resolve, 5)); // distinct createdAt timestamps
+  }
+  assert.deepEqual(listTasks(run).map(task => task.id), ids);
 });

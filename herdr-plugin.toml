@@ -17,6 +17,12 @@ title = "Feature team status"
 contexts = ["workspace"]
 command = ["node", "src/cli.mjs", "status"]
 
+[[actions]]
+id = "settings"
+title = "Open orchestrator settings"
+contexts = ["workspace"]
+command = ["node", "src/cli.mjs", "dashboard"]
+
 [[panes]]
 id = "coordinator"
 title = "Feature orchestrator"

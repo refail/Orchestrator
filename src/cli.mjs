@@ -4,10 +4,12 @@ import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { once } from 'node:events';
-import { createRun, readRun, listTasks, optionalJson, publish, taskDir } from './team.mjs';
+import { createRun, readRun, listTasks, publish, taskDir, recoverTask } from './team.mjs';
 import { invocation, openPane, currentPane, requireHerdr, PLUGIN_ID } from './herdr.mjs';
-import { checkConfig, piLaunch } from './profiles.mjs';
+import { piLaunch } from './profiles.mjs';
+import { snapshotAgents } from './agents.mjs';
 import { runWorker } from './worker.mjs';
+import { serveDashboard } from './dashboard.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 function required(env, key) {
@@ -17,7 +19,8 @@ function required(env, key) {
 function runsFor(stateRoot, project) {
   let ids;
   try { ids = readdirSync(join(stateRoot, 'runs')); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  return ids.map(id => join(stateRoot, 'runs', id)).map(dir => ({ dir, run: readRun(dir) }))
+  // One damaged run must not hide the others.
+  return ids.map(id => join(stateRoot, 'runs', id)).flatMap(dir => { try { return [{ dir, run: readRun(dir) }]; } catch { return []; } })
     .filter(({ run }) => run.project === project)
     .sort((a, b) => b.run.createdAt.localeCompare(a.run.createdAt));
 }
@@ -47,7 +50,7 @@ async function statusPane(env, output) {
     const runs = runsFor(state, project).slice(0, 10);
     if (!runs.length) output.write('No feature runs yet. Invoke personal.orchestrator.start in this workspace.\n');
     for (const { dir, run } of runs) {
-      output.write(`Run ${run.id} (${run.createdAt})\n`);
+      output.write(`Run ${run.id} (${run.createdAt})${run.legacy ? ' · older plugin version, read-only' : ''}\n`);
       const tasks = listTasks(dir);
       if (!tasks.length) output.write('  No assignments yet. Talk to the orchestrator.\n');
       for (const task of tasks) output.write(`  ${task.status.padEnd(17)} ${task.role.padEnd(11)} ${task.title}\n  ${task.id}\n`);
@@ -94,25 +97,40 @@ export async function main(mode = process.argv[2], {
     output.write(`${JSON.stringify({ run: readRun(dir), tasks: listTasks(dir, true) }, null, 2)}\n`);
     return;
   }
+  if (mode === 'recover') {
+    const [dir, id, flag] = process.argv.slice(3);
+    if (!dir || !id || (flag && flag !== '--confirm')) throw new Error('Usage: node src/cli.mjs recover RUN_DIR TASK_ID [--confirm]');
+    const task = recoverTask(resolve(dir), id, { confirmed: flag === '--confirm' });
+    output.write(`Recorded ${task.status} for ${task.role} task ${task.id}; its checkout lease (if any) is released.\n`);
+    return;
+  }
+  if (mode === 'dashboard') {
+    // A Herdr action has no terminal: detach so the server outlives the action.
+    if (!interactive) {
+      spawn(process.execPath, [fileURLToPath(import.meta.url), 'dashboard-serve'], { env, detached: true, stdio: 'ignore' }).unref();
+      return;
+    }
+    const dashboard = await serveDashboard({ log: line => output.write(`${line}\n`) });
+    process.once('SIGINT', dashboard.stop);
+    return dashboard.done;
+  }
+  if (mode === 'dashboard-serve') return (await serveDashboard({ log: () => {} })).done;
   requireHerdr(env);
   if (mode === 'start-here') {
     if (!interactive) throw new Error('start-here requires an interactive terminal; run start.sh directly, not a plugin action');
     const pane = await currentPane(env); // Explicit caller identity, never the focused pane.
     const home = env.HOME || homedir();
-    const configDir = env.HERDR_PLUGIN_CONFIG_DIR || join(env.XDG_CONFIG_HOME || join(home, '.config'), 'herdr/plugins/config', PLUGIN_ID);
     const stateDir = env.HERDR_PLUGIN_STATE_DIR || join(env.XDG_STATE_HOME || join(home, '.local/state'), 'herdr/plugins', PLUGIN_ID);
-    const config = checkConfig(optionalJson(join(configDir, 'config.json')) ?? {});
-    const runDir = createRun(stateDir, realpathSync(cwd), pane.workspace_id, config);
+    const runDir = createRun(stateDir, realpathSync(cwd), pane.workspace_id, snapshotAgents(ROOT));
     publish(join(runDir, 'coordinator.json'), { pane });
     output.write(`Feature orchestrator in this pane. Records: ${runDir}\n`);
     await coordinator(runDir, { ...env, HERDR_ORCH_RUN: runDir, HERDR_PLUGIN_ROOT: ROOT,
-      HERDR_PLUGIN_CONFIG_DIR: configDir, HERDR_PLUGIN_STATE_DIR: stateDir, PWD: realpathSync(cwd) });
+      HERDR_PLUGIN_STATE_DIR: stateDir, PWD: realpathSync(cwd) });
     return runDir;
   }
   if (mode === 'start') {
     const { project, workspace } = invocation(env);
-    const config = checkConfig(optionalJson(join(required(env, 'HERDR_PLUGIN_CONFIG_DIR'), 'config.json')) ?? {});
-    const runDir = createRun(required(env, 'HERDR_PLUGIN_STATE_DIR'), project, workspace, config);
+    const runDir = createRun(required(env, 'HERDR_PLUGIN_STATE_DIR'), project, workspace, snapshotAgents(ROOT));
     try {
       const receipt = await openPane({ workspace, project, entrypoint: 'coordinator', focus: true, env: { HERDR_ORCH_RUN: runDir } }, env);
       if (!receipt.pane?.terminal_id) throw new Error('Missing stable coordinator terminal identity');
@@ -139,7 +157,7 @@ export async function main(mode = process.argv[2], {
     finally { process.off('SIGINT', ignore); process.off('SIGTERM', abort); process.off('SIGHUP', abort); }
   }
   if (mode === 'status-pane') return statusPane(env, output);
-  throw new Error('Usage: node src/cli.mjs start-here|start|status|coordinator|worker|status-pane|claude-hook|inspect RUN_DIR');
+  throw new Error('Usage: node src/cli.mjs start-here|start|status|dashboard|coordinator|worker|status-pane|claude-hook|inspect RUN_DIR|recover RUN_DIR TASK_ID [--confirm]');
 }
 if (process.argv[1] && pathToFileURL(resolve(process.argv[1])).href === import.meta.url) {
   main().catch(error => { console.error(error.message); process.exitCode = 1; });

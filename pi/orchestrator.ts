@@ -11,12 +11,14 @@ export default function (pi: ExtensionAPI) {
     if (!runDir) throw new Error('Missing HERDR_ORCH_RUN; start through personal.orchestrator.start');
     return readRun(runDir);
   };
+  // Role names come from this run's agent snapshot (agents.json at start).
+  const roles = runDir ? Object.keys(readRun(runDir).config.agents ?? {}) : [];
   const result = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }], details: data });
   pi.registerTool({
     name: 'team_delegate', label: 'Delegate', executionMode: 'sequential',
-    description: 'Assign a bounded task to a specialist in its own visible, named Herdr tab running the real agent TUI. Include goal, scope, evidence, and acceptance criteria in brief. Set skills to the agent skills (names from team_skill) the worker must follow. For follow-ups set previousTask to a finished task ID; a fresh worker receives that task/report. Only coder may run checks; coder and simplifier may edit files. Never retry an uncertain launch blindly.',
+    description: 'Assign a bounded task to a specialist in its own visible, named Herdr tab running the real agent TUI. Include goal, scope, evidence, and acceptance criteria in brief. Set skills to the agent skills (names from team_skill) the worker must follow. For follow-ups set previousTask to a finished task ID; a fresh worker receives that task/report. Each role\'s capabilities are listed under "Your specialists" in your instructions. Never retry an uncertain launch blindly.',
     parameters: Type.Object({
-      role: Type.Union([Type.Literal('coder'), Type.Literal('reviewer'), Type.Literal('researcher'), Type.Literal('security'), Type.Literal('simplifier')]),
+      role: roles.length ? Type.Union(roles.map(name => Type.Literal(name))) : Type.String(),
       title: Type.String({ minLength: 1, maxLength: 100 }),
       brief: Type.String({ minLength: 1, maxLength: 16000 }),
       previousTask: Type.Optional(Type.String()),

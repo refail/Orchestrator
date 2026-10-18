@@ -19,7 +19,24 @@ export function listSkills(dir = SKILLS_DIR) {
   return names.filter(name => NAME.test(name)).sort().flatMap(name => {
     let text;
     try { text = loadSkill(name, dir); } catch { return []; }
-    const description = /^description:\s*(.+)$/m.exec(/^---\n([\s\S]*?)\n---/.exec(text)?.[1] ?? '')?.[1]?.trim();
+    const description = skillDescription(text);
     return description ? [{ name, description }] : [];
   });
+}
+// The frontmatter `description`, including YAML block scalars (`>` or `|`),
+// flattened to one line.
+export function skillDescription(text) {
+  const front = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? '';
+  const match = /^description:[ \t]*(.*)$/m.exec(front);
+  if (!match) return undefined;
+  let value = match[1].trim();
+  if (/^[>|][-+]?$/.test(value)) {
+    const block = [];
+    for (const line of front.slice(match.index + match[0].length).split(/\r?\n/).slice(1)) {
+      if (line.trim() && !/^\s/.test(line)) break;
+      block.push(line.trim());
+    }
+    value = block.join(' ').trim();
+  }
+  return value.replace(/^(['"])(.*)\1$/, '$2').trim() || undefined;
 }

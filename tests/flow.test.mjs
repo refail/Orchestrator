@@ -8,6 +8,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { main } from '../src/cli.mjs';
 import { delegate, waitForTasks, readRun } from '../src/team.mjs';
 import { openPane } from '../src/herdr.mjs';
+import { loadAgents } from '../src/agents.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 async function untilFile(path) {
@@ -31,7 +32,9 @@ test('start → isolated Pi launch → research → code → review using real f
   const runDir = await main('start', { env, output: { write() {} } });
   const pi = await untilFile(join(root, 'pi-launch.json'));
   assert.equal(pi.cwd, realpathSync(join(root, 'project')));
-  assert.ok(pi.args.includes('openai-codex/gpt-6.1-sol'));
+  const { config, prompts } = loadAgents();
+  assert.equal(pi.args[pi.args.indexOf('--model') + 1], config.orchestrator.model);
+  assert.equal(pi.args[pi.args.indexOf('--system-prompt') + 1], join(runDir, 'orchestrator.md'));
   assert.ok(pi.args.includes('--no-mcp'));
   assert.equal(readRun(runDir).workspace, 'w1');
   const coordinator = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8'));
@@ -46,6 +49,8 @@ test('start → isolated Pi launch → research → code → review using real f
   const coder = await delegate(runDir, { role: 'coder', title: 'Code', brief: 'Make the change' }, launch);
   assert.equal((await waitForTasks(runDir, [coder.id], 10_000))[0].status, 'completed');
   assert.equal(readFileSync(join(root, 'project/change.txt'), 'utf8'), 'fake coder change');
+  const claude = JSON.parse(readFileSync(join(root, 'claude-args.json'), 'utf8'));
+  assert.equal(claude[claude.indexOf('--append-system-prompt') + 1], prompts.coder, 'the coder gets its snapshotted prompt');
   const review = await delegate(runDir, { role: 'reviewer', title: 'Review', brief: 'Review the change', previousTask: coder.id }, launch);
   assert.equal((await waitForTasks(runDir, [review.id], 10_000))[0].status, 'completed');
   const launches = readFileSync(join(root, 'herdr-calls.jsonl'), 'utf8').trim().split('\n').map(JSON.parse);

@@ -1,12 +1,10 @@
 import { spawn, execFileSync } from 'node:child_process';
 import { openSync, closeSync, writeSync, readFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { readRun, readTask, taskDir, optionalJson, publish, finishTask } from './team.mjs';
-import { workerLaunch, CLAUDE_ROLES } from './profiles.mjs';
+import { workerLaunch } from './profiles.mjs';
 
-const ROOT = fileURLToPath(new URL('../', import.meta.url));
 // OpenCode `run --format json` events from the headless client.
 export function collectOutcome(events, code) {
   let text = '', terminal = false, started = false, finalText = false, failure = '';
@@ -171,20 +169,23 @@ export async function runWorker(runDir, id, { launch, output = process.stdout, s
 
   const abort = () => stop('interrupted');
   try {
+    if (run.legacy) throw new Error('This run was created by an older plugin version; start a new feature run');
+    const agent = run.config.agents[task.role];
+    if (!agent) throw new Error(`Run has no agent named ${task.role}`);
     if (!launch) {
-      const instructions = readFileSync(join(ROOT, 'prompts', `${task.role}.md`), 'utf8');
+      const instructions = run.config.prompts[task.role];
       const skills = optionalText(join(dir, 'skills.md'));
       const system = skills ? `${instructions}\nFollow the agent skills below for this assignment. They describe workflow; your role limits and permissions above still apply.\n\n${skills}` : instructions;
-      const brief = `Assignment: ${task.title}\nProject: ${run.project}\n\n${task.brief}\n\n${task.context}${['reviewer', 'security', 'simplifier'].includes(task.role) ? reviewSnapshot(run.project) : ''}`;
+      const brief = `Assignment: ${task.title}\nProject: ${run.project}\n\n${task.brief}\n\n${task.context}${agent.diff ? reviewSnapshot(run.project) : ''}`;
       const configDir = join(dir, 'opencode-config');
-      if (!Object.hasOwn(CLAUDE_ROLES, task.role)) mkdirSync(configDir, { mode: 0o700 });
-      launch = workerLaunch(task.role, run.config, brief, system, configDir, task.title);
+      if (agent.harness === 'opencode') mkdirSync(configDir, { mode: 0o700 });
+      launch = workerLaunch(task.role, agent, brief, system, configDir, task.title);
     }
     output.write(`\n[${task.role}] ${task.title}\nTask: ${id}\nProject: ${run.project}\n${task.skills?.length ? `Skills: ${task.skills.join(', ')}\n` : ''}\n`);
     signal?.throwIfAborted();
-    timer = setTimeout(() => stop('timed_out'), run.config.taskTimeoutMs);
+    timer = setTimeout(() => stop('timed_out'), agent.timeoutMinutes * 60_000);
     signal?.addEventListener('abort', abort, { once: true });
-    await (Object.hasOwn(CLAUDE_ROLES, task.role) ? claude() : opencode());
+    await (agent.harness === 'claude' ? claude() : opencode());
     const result = optionalJson(join(dir, 'result.json'));
     output.write(`\n[${result.status}] ${id}\nReport: ${join(dir, 'result.json')}\n`);
   } catch (error) {
