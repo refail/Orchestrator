@@ -273,9 +273,10 @@ clean-sessions --days 14 --yes
 - **Claude Code**: `~/.claude/projects/*/<session-id>.jsonl` plus that session's
   folder, `file-history`, `session-env` and debug log. Only files named by a
   session ID are touched; `memory/` and anything else stay.
-- **OpenCode**: top-level sessions found read-only in `opencode.db`, deleted with
-  `opencode session delete` (children go with them), then re-checked. Any that
-  remain are listed. Older `opencode-local.db` data is left alone.
+- **OpenCode**: top-level sessions found read-only in `opencode.db` (v2's
+  `session_v2` table), deleted with `opencode session delete` (children go with
+  them), then re-checked. Any that remain are listed. Leftover v1 data (the old
+  `session` table and `opencode-local.db`) is not shown by OpenCode and is left alone.
 - **Orchestrator**: the same rules as `prune`.
 
 Age is the last modification time, so a long session you are still using is kept.

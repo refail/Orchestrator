@@ -33,6 +33,9 @@ const paths = env => {
   };
 };
 const sql = (db, query) => JSON.parse(execFileSync('sqlite3', ['-readonly', '-json', `file:${db}?mode=ro`, query], { encoding: 'utf8' }) || '[]');
+// OpenCode v2 keeps live sessions in session_v2; the old `session` table is
+// leftover v1 data that its CLI neither lists nor deletes.
+const sessionTable = db => sql(db, "select name from sqlite_master where type = 'table' and name = 'session_v2'").length ? 'session_v2' : 'session';
 
 export function findOldSessions({ env = process.env, days = 7, now = Date.now() } = {}) {
   const where = paths(env), cutoff = now - days * DAY, found = [];
@@ -60,7 +63,8 @@ export function findOldSessions({ env = process.env, days = 7, now = Date.now() 
   }
   if (existsSync(where.opencodeDb)) {
     // Read-only discovery; deletion goes through OpenCode itself. Children go with their parent.
-    for (const row of sql(where.opencodeDb, `select id, directory, title, time_updated from session where parent_id is null and time_updated < ${Math.floor(cutoff)}`)) {
+    const table = sessionTable(where.opencodeDb);
+    for (const row of sql(where.opencodeDb, `select id, directory, title, time_updated from ${table} where parent_id is null and time_updated < ${Math.floor(cutoff)}`)) {
       if (OPENCODE_ID.test(row.id)) found.push({ tool: 'opencode', label: `${row.title} (${row.directory})`, id: row.id, directory: row.directory, paths: [], last: row.time_updated });
     }
   }
@@ -77,12 +81,13 @@ export function deleteSessions(found, { env = process.env, days = 7, now = Date.
   // Re-checks leases and live workers at deletion time.
   if (found.some(item => item.tool === 'orchestrator')) deleted += pruneRuns(where.runs, { maxAgeMs: days * DAY, now }).removed.length;
   const opencode = found.filter(item => item.tool === 'opencode');
+  const table = opencode.length ? sessionTable(where.opencodeDb) : null;
   opencode.forEach((item, index) => {
     log(`OpenCode ${index + 1}/${opencode.length}: ${item.label}`);
     try {
       execFileSync('opencode', ['session', 'delete', item.id], { cwd: existsSync(item.directory) ? item.directory : where.home, stdio: 'ignore', timeout: 60_000, env });
     } catch { /* verified below */ }
-    if (sql(where.opencodeDb, `select id from session where id = '${item.id}'`).length) failed.push(item);
+    if (sql(where.opencodeDb, `select id from ${table} where id = '${item.id}'`).length) failed.push(item);
     else deleted++;
   });
   return { deleted, failed };

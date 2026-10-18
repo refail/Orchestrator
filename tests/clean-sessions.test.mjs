@@ -33,12 +33,15 @@ test('finds and deletes only sessions idle past the limit, and verifies OpenCode
   const db = join(home, '.local/share/opencode/opencode.db');
   mkdirSync(join(db, '..'), { recursive: true });
   const old = Date.now() - 10 * DAY;
-  execFileSync('sqlite3', [db, `create table session (id text primary key, parent_id text, directory text, title text, time_updated integer);
-    insert into session values ('ses_old', null, '/gone', 'Old', ${old}), ('ses_stuck', null, '${home}', 'Stuck', ${old}),
-    ('ses_child', 'ses_old', '/gone', 'Child', ${old}), ('ses_new', null, '${home}', 'New', ${Date.now()});`]);
+  // OpenCode v2 keeps live sessions in session_v2; `session` is leftover v1 data its CLI never touches.
+  execFileSync('sqlite3', [db, `create table session_v2 (id text primary key, parent_id text, directory text, title text, time_updated integer);
+    insert into session_v2 values ('ses_old', null, '/gone', 'Old', ${old}), ('ses_stuck', null, '${home}', 'Stuck', ${old}),
+    ('ses_child', 'ses_old', '/gone', 'Child', ${old}), ('ses_new', null, '${home}', 'New', ${Date.now()});
+    create table session (id text primary key, parent_id text, directory text, title text, time_updated integer);
+    insert into session values ('ses_legacy', null, '/gone', 'Legacy', ${old});`]);
   const bin = join(home, 'bin');
   mkdirSync(bin);
-  writeFileSync(join(bin, 'opencode'), `#!/bin/sh\n[ "$3" = ses_stuck ] && exit 1\nexec sqlite3 '${db}' "delete from session where id = '$3' or parent_id = '$3'"\n`, { mode: 0o700 });
+  writeFileSync(join(bin, 'opencode'), `#!/bin/sh\n[ "$3" = ses_stuck ] && exit 1\nexec sqlite3 '${db}' "delete from session_v2 where id = '$3' or parent_id = '$3'"\n`, { mode: 0o700 });
   const state = join(home, 'state');
   mkdirSync(join(home, 'project'));
   const run = createRun(state, join(home, 'project'), 'w1', DEFAULTS);
@@ -55,6 +58,7 @@ test('finds and deletes only sessions idle past the limit, and verifies OpenCode
   assert.deepEqual(failed.map(item => item.id), ['ses_stuck']);
   for (const path of [oldPi, oldClaude, join(claude, 'file-history', ID), run]) assert.ok(!existsSync(path), path);
   for (const path of [newPi, newClaude, memory, notes]) assert.ok(existsSync(path), path);
-  const left = execFileSync('sqlite3', [db, 'select id from session order by id'], { encoding: 'utf8' }).trim().split('\n');
+  const left = execFileSync('sqlite3', [db, 'select id from session_v2 order by id'], { encoding: 'utf8' }).trim().split('\n');
   assert.deepEqual(left, ['ses_new', 'ses_stuck']);
+  assert.ok(!found.some(item => item.id === 'ses_legacy'), 'leftover v1 rows are not reported');
 });
