@@ -9,6 +9,7 @@ import { main } from '../src/cli.mjs';
 import { delegate, waitForTasks, readRun } from '../src/team.mjs';
 import { openPane } from '../src/herdr.mjs';
 import { loadAgents } from '../src/agents.mjs';
+import { runnersExited } from './fixtures/runners.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 async function untilFile(path) {
@@ -58,4 +59,5 @@ test('start → isolated Pi launch → research → code → review using real f
   assert.equal(launches.length, 13);
   assert.ok(launches.some(args => args.join(' ') === `tab rename ${worker.pane.tab_id} researcher · Find`));
   for (const args of launches.filter(args => args[0] === 'plugin')) assert.equal(args[args.indexOf('--workspace') + 1], 'w1');
+  await runnersExited(runDir);
 });

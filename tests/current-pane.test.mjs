@@ -8,6 +8,7 @@ import { main } from '../src/cli.mjs';
 import { readRun, delegate, waitForTasks } from '../src/team.mjs';
 import { openPane } from '../src/herdr.mjs';
 import { snapshotAgents } from '../src/agents.mjs';
+import { runnersExited } from './fixtures/runners.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 test('foreground start refuses outside Herdr or without an interactive terminal', async () => {
@@ -46,4 +47,5 @@ test('foreground start uses this pane and cwd, saves its anchor, and delegates w
   assert.equal((await waitForTasks(runDir, [task.id], 10_000))[0].status, 'completed');
   assert.equal(calls().filter(args => args[0] === 'plugin').length, 1);
   assert.ok(!calls().some(args => args.includes('coordinator')));
+  await runnersExited(runDir);
 });
