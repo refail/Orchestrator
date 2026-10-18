@@ -1,0 +1,36 @@
+id = "personal.orchestrator"
+name = "Feature Orchestrator"
+version = "0.1.0"
+min_herdr_version = "0.7.1"
+description = "Talk to a coordination-only Pi lead; delegate to Claude Code and OpenCode in visible panes."
+platforms = ["macos", "linux"]
+
+[[actions]]
+id = "start"
+title = "Start feature orchestrator"
+contexts = ["workspace"]
+command = ["node", "src/cli.mjs", "start"]
+
+[[actions]]
+id = "status"
+title = "Feature team status"
+contexts = ["workspace"]
+command = ["node", "src/cli.mjs", "status"]
+
+[[panes]]
+id = "coordinator"
+title = "Feature orchestrator"
+placement = "tab"
+command = ["sh", "-c", 'exec node "$HERDR_PLUGIN_ROOT/src/cli.mjs" coordinator']
+
+[[panes]]
+id = "worker"
+title = "Feature specialist"
+placement = "tab"
+command = ["sh", "-c", 'exec node "$HERDR_PLUGIN_ROOT/src/cli.mjs" worker']
+
+[[panes]]
+id = "status"
+title = "Feature team status"
+placement = "overlay"
+command = ["sh", "-c", 'exec node "$HERDR_PLUGIN_ROOT/src/cli.mjs" status-pane']
