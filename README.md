@@ -250,14 +250,35 @@ test evidence and independent review. Keep failed records for recovery.
 Old runs are removed with `node src/cli.mjs prune [--days 7] [--dry-run]`. It
 deletes a run directory (including its Pi session and task records) only after
 no file in it has changed for that many days, and always keeps runs that hold a
-checkout lease or have a running worker. Worker transcripts kept by Claude Code
-and OpenCode themselves are not touched. A daily cron entry:
+checkout lease or have a running worker.
 
-```cron
-0 12 * * * /path/to/node ~/dotfiles/herdr/plugins/orchestrator/src/cli.mjs prune --days 7 >> ~/.local/state/herdr/plugins/personal.orchestrator/prune.log 2>&1
+## Cleaning old sessions
+
+`bin/clean-sessions.mjs` deletes sessions with no activity for more than a week
+from Pi, Claude Code, OpenCode and this plugin, all at once. Link it once:
+
+```sh
+ln -s ~/dotfiles/herdr/plugins/orchestrator/bin/clean-sessions.mjs ~/.local/bin/clean-sessions
 ```
 
-Cron has no nvm on its PATH, so use node's absolute path (`command -v node`).
+then run it whenever you like:
+
+```sh
+clean-sessions --dry-run   # list what would go, delete nothing
+clean-sessions             # show a summary and ask before deleting
+clean-sessions --days 14 --yes
+```
+
+- **Pi**: `*.jsonl` files under `~/.pi/agent/sessions` (or `PI_CODING_AGENT_SESSION_DIR`).
+- **Claude Code**: `~/.claude/projects/*/<session-id>.jsonl` plus that session's
+  folder, `file-history`, `session-env` and debug log. Only files named by a
+  session ID are touched; `memory/` and anything else stay.
+- **OpenCode**: top-level sessions found read-only in `opencode.db`, deleted with
+  `opencode session delete` (children go with them), then re-checked. Any that
+  remain are listed. Older `opencode-local.db` data is left alone.
+- **Orchestrator**: the same rules as `prune`.
+
+Age is the last modification time, so a long session you are still using is kept.
 
 ## Development and verification
 
