@@ -21,7 +21,7 @@ test('foreground start uses this pane and cwd, saves its anchor, and delegates w
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const dir of ['project', 'bin', 'xdg-config', 'xdg-state']) mkdirSync(join(root, dir));
   const fake = readFileSync(new URL('./fixtures/cli.mjs', import.meta.url), 'utf8');
-  for (const name of ['herdr', 'pi', 'opencode']) writeFileSync(join(root, 'bin', name), fake, { mode: 0o700 });
+  for (const name of ['herdr', 'pi', 'opencode', 'claude']) writeFileSync(join(root, 'bin', name), fake, { mode: 0o700 });
   const env = { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, HERDR_ENV: '1', HERDR_SOCKET_PATH: join(root, 'socket'),
     HERDR_BIN_PATH: join(root, 'bin/herdr'), HERDR_PANE_ID: 'w1:p1', HERDR_WORKSPACE_ID: 'w1', HERDR_TAB_ID: 'w1:t1',
     XDG_CONFIG_HOME: join(root, 'xdg-config'), XDG_STATE_HOME: join(root, 'xdg-state'),
