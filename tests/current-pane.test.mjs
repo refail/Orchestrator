@@ -3,20 +3,22 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
+import { pathToFileURL } from 'node:url';
 import { main } from '../src/cli.mjs';
 import { readRun, delegate, waitForTasks } from '../src/team.mjs';
 import { openPane } from '../src/herdr.mjs';
-import { snapshotAgents } from '../src/agents.mjs';
+import { pluginCopy } from './fixtures/agents.mjs';
 import { runnersExited } from './fixtures/runners.mjs';
 
-const ROOT = fileURLToPath(new URL('../', import.meta.url));
 test('foreground start refuses outside Herdr or without an interactive terminal', async () => {
   await assert.rejects(main('start-here', { env: {}, interactive: true }), /Herdr-managed/);
   await assert.rejects(main('start-here', { env: { HERDR_ENV: '1', HERDR_SOCKET_PATH: '/no/socket' }, interactive: false }), /interactive terminal/);
 });
 
 test('foreground start uses this pane and cwd, saves its anchor, and delegates without opening a coordinator tab', async t => {
+  const ROOT = pluginCopy(t);
+  const { main } = await import(pathToFileURL(`${ROOT}src/cli.mjs`).href);
+  const { snapshotAgents } = await import(pathToFileURL(`${ROOT}src/agents.mjs`).href);
   const root = realpathSync(mkdtempSync(join(tmpdir(), 'herdr-current-pane-')));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const dir of ['project', 'bin', 'xdg-config', 'xdg-state']) mkdirSync(join(root, dir));
@@ -32,7 +34,7 @@ test('foreground start uses this pane and cwd, saves its anchor, and delegates w
   const run = readRun(runDir);
   assert.equal(run.project, join(root, 'project'));
   assert.equal(run.workspace, 'w1');
-  assert.deepEqual(run.config, snapshotAgents(), 'the run snapshots agents.json and its prompts');
+  assert.deepEqual(run.config, snapshotAgents(ROOT), 'the run snapshots agents.json and its prompts');
   assert.ok(runDir.startsWith(join(root, 'xdg-state')));
   const receipt = JSON.parse(readFileSync(join(runDir, 'coordinator.json'), 'utf8'));
   assert.equal(receipt.pane.terminal_id, 'coordinator-terminal');

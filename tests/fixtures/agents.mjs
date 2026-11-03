@@ -1,4 +1,4 @@
-import { mkdtempSync, cpSync, rmSync } from 'node:fs';
+import { mkdtempSync, cpSync, rmSync, mkdirSync, writeFileSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { ROOT } from '../../src/agents.mjs';
@@ -28,11 +28,27 @@ export function config({ limits = {}, agents = {}, prompts = {} } = {}) {
   for (const name of Object.keys(value.agents)) if (!value.agents[name]) { delete value.agents[name]; delete value.prompts[name]; }
   return value;
 }
-// A disposable copy of the plugin's agents.json and prompts.
+// Write the fixed DEFAULTS team as agents.json plus prompts/<name>.md. Tests
+// never depend on the lead or roles saved in the owner's editable agents.json.
+function writeTeam(root) {
+  const { prompts, ...settings } = DEFAULTS;
+  writeFileSync(join(root, 'agents.json'), `${JSON.stringify(settings, null, 2)}\n`);
+  mkdirSync(join(root, 'prompts'));
+  for (const [name, text] of Object.entries(prompts)) writeFileSync(join(root, 'prompts', `${name}.md`), text);
+}
+// A disposable agents.json and prompts directory.
 export function copyRoot(t) {
   const root = mkdtempSync(join(tmpdir(), 'herdr-agents-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
-  cpSync(join(ROOT, 'agents.json'), join(root, 'agents.json'));
-  cpSync(join(ROOT, 'prompts'), join(root, 'prompts'), { recursive: true });
+  writeTeam(root);
   return root;
+}
+// A disposable copy of the plugin code with the DEFAULTS team (a Pi lead), for
+// tests that start real runs from the CLI.
+export function pluginCopy(t) {
+  const root = realpathSync(mkdtempSync(join(tmpdir(), 'herdr-plugin-')));
+  t.after(() => rmSync(root, { recursive: true, force: true }));
+  for (const dir of ['src', 'pi']) cpSync(join(ROOT, dir), join(root, dir), { recursive: true });
+  writeTeam(root);
+  return `${root}/`;
 }

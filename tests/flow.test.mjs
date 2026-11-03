@@ -3,15 +3,13 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, realpathSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath } from 'node:url';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { main } from '../src/cli.mjs';
 import { delegate, waitForTasks, readRun } from '../src/team.mjs';
 import { openPane } from '../src/herdr.mjs';
-import { loadAgents } from '../src/agents.mjs';
+import { pathToFileURL } from 'node:url';
+import { pluginCopy } from './fixtures/agents.mjs';
 import { runnersExited } from './fixtures/runners.mjs';
 
-const ROOT = fileURLToPath(new URL('../', import.meta.url));
 async function untilFile(path) {
   for (let i = 0; i < 100; i++) {
     try { return JSON.parse(readFileSync(path, 'utf8')); } catch (e) { if (e.code !== 'ENOENT') throw e; }
@@ -21,6 +19,9 @@ async function untilFile(path) {
 }
 
 test('start → isolated Pi launch → research → code → review using real fake-CLI subprocesses', async t => {
+  const ROOT = pluginCopy(t);
+  const { main } = await import(pathToFileURL(`${ROOT}src/cli.mjs`).href);
+  const { loadAgents } = await import(pathToFileURL(`${ROOT}src/agents.mjs`).href);
   const root = mkdtempSync(join(tmpdir(), 'herdr-flow-'));
   t.after(() => rmSync(root, { recursive: true, force: true }));
   for (const dir of ['project', 'bin', 'state', 'config']) mkdirSync(join(root, dir));
@@ -33,7 +34,7 @@ test('start → isolated Pi launch → research → code → review using real f
   const runDir = await main('start', { env, output: { write() {} } });
   const pi = await untilFile(join(root, 'pi-launch.json'));
   assert.equal(pi.cwd, realpathSync(join(root, 'project')));
-  const { config, prompts } = loadAgents();
+  const { config, prompts } = loadAgents(ROOT);
   assert.equal(pi.args[pi.args.indexOf('--model') + 1], config.orchestrator.model);
   assert.equal(pi.args[pi.args.indexOf('--system-prompt') + 1], join(runDir, 'orchestrator.md'));
   assert.ok(pi.args.includes('--no-mcp'));
