@@ -11,10 +11,10 @@ shipped team:
 
 | Agent | Harness | Model | Tools |
 | --- | --- | --- | --- |
-| Orchestrator | Pi | `openai-codex/gpt-6.1-sol`, **high** thinking | coordination only |
+| Orchestrator | Claude Code | Your configured Claude default, **high** effort | coordination only |
 | coder | Claude Code | Your configured Claude default | edit + commands |
 | reviewer | OpenCode | `openai/gpt-6.1-sol` | read-only, gets the diff |
-| researcher | OpenCode | `openai/gpt-5.6-sol` | read-only, runs alongside others |
+| researcher | OpenCode | `openai/gpt-6.1-sol` | read-only, runs alongside others |
 | security | Claude Code | `claude-opus-5-5`, **medium** effort | read-only, gets the diff, always `security-and-hardening` |
 | simplifier | OpenCode | `openai/gpt-6.1-sol`, **medium** variant | edit, no commands, gets the diff |
 

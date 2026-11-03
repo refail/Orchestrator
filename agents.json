@@ -1,6 +1,7 @@
 {
   "orchestrator": {
-    "model": "openai-codex/gpt-6.1-sol",
+    "harness": "claude",
+    "model": null,
     "thinking": "high"
   },
   "limits": {
@@ -37,7 +38,7 @@
     "researcher": {
       "description": "Read-only project exploration: finds relevant code, conventions and constraints.",
       "harness": "opencode",
-      "model": "openai/gpt-5.6-sol",
+      "model": "openai/gpt-6.1-sol",
       "effort": null,
       "tools": "readonly",
       "web": false,
