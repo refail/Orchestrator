@@ -73,6 +73,30 @@ test('MCP tool calls return text, JSON or readable errors', async () => {
   await client.done;
 });
 
+test('MCP runs sequential tools one at a time, like Pi, so parallel delegations do not race', async () => {
+  let active = 0, most = 0;
+  const slow = (sequential, name) => ({ ...tool(name, async () => {
+    active++; most = Math.max(most, active);
+    await new Promise(resolve => setTimeout(resolve, 30));
+    active--;
+    if (name === 'fails') throw new Error('Checkout is busy');
+    return 'ok';
+  }), sequential });
+  const client = connect([slow(true, 'delegate'), slow(true, 'fails'), slow(false, 'status')]);
+  const replies = await Promise.all([
+    client.request(1, 'tools/call', { name: 'delegate' }),
+    client.request(2, 'tools/call', { name: 'fails' }),
+    client.request(3, 'tools/call', { name: 'delegate' }),
+  ]);
+  assert.equal(most, 1, 'never two sequential calls at once');
+  assert.deepEqual(replies.map(reply => Boolean(reply.result.isError)), [false, true, false], 'a failure does not block the queue');
+  most = 0;
+  await Promise.all([client.request(4, 'tools/call', { name: 'status' }), client.request(5, 'tools/call', { name: 'status' })]);
+  assert.equal(most, 2, 'other tools still run in parallel');
+  client.input.end();
+  await client.done;
+});
+
 test('MCP cancellation aborts a waiting call and sends no response; closing stdin aborts the rest', async () => {
   const aborted = [];
   const wait = tool('wait', (args, signal) => new Promise((resolve, reject) => {

@@ -17,7 +17,8 @@ export function leadLaunch(root, runDir, config, env = process.env) {
     return {
       command: 'claude',
       // Plain MCP handshake for our minimal server (see the 2026-07-28 negotiation in Claude Code's changelog).
-      env: { MCP_PROTOCOL_NEGOTIATION: 'legacy' },
+      // Room for team_wait's up to 8 full reports (Claude's default cap is 25k tokens).
+      env: { MCP_PROTOCOL_NEGOTIATION: 'legacy', MAX_MCP_OUTPUT_TOKENS: '100000' },
       args: [
         // No built-in tools; the team tools are pre-approved and anything else is denied, never prompted.
         '--tools', '', '--permission-mode', 'dontAsk', '--allowedTools', 'mcp__team__*',

@@ -8,6 +8,7 @@ const VERSIONS = ['2025-11-25', '2025-06-18', '2025-03-26', '2024-11-05'];
 
 export async function serveMcp(tools, { input = process.stdin, output = process.stdout, log = line => process.stderr.write(`${line}\n`) } = {}) {
   const running = new Map(), calls = new Set();
+  let queue = Promise.resolve(); // Sequential tools run one at a time, as in Pi.
   const send = message => output.write(`${JSON.stringify({ jsonrpc: '2.0', ...message })}\n`);
   const fail = (id, code, message) => send({ id, error: { code, message } });
   async function call(id, params) {
@@ -18,7 +19,10 @@ export async function serveMcp(tools, { input = process.stdin, output = process.
     let result;
     try {
       const args = params.arguments && typeof params.arguments === 'object' ? params.arguments : {};
-      result = { content: [{ type: 'text', text: toolText(await tool.execute(args, controller.signal)) }] };
+      const run = () => tool.execute(args, controller.signal);
+      const pending = tool.sequential ? queue.then(run) : run();
+      if (tool.sequential) queue = pending.catch(() => {});
+      result = { content: [{ type: 'text', text: toolText(await pending) }] };
     } catch (error) {
       // Tool failures are results the model can read, not protocol errors.
       result = { content: [{ type: 'text', text: String(error?.message ?? error) }], isError: true };

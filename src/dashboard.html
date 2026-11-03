@@ -213,7 +213,13 @@ function onInput(event) {
   const value = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
   if (el.dataset.o) {
     const o = draft.orchestrator;
-    if (el.dataset.o === 'harness') { o.harness = value; o.thinking = value === 'pi' ? 'high' : null; render(); return; }
+    if (el.dataset.o === 'harness') {
+      // Model IDs and effort levels differ per harness: going back to the saved
+      // harness restores its values, any other harness starts empty.
+      const kept = saved.orchestrator;
+      Object.assign(o, value === kept.harness ? { model: kept.model, thinking: kept.thinking } : { model: null, thinking: value === 'pi' ? 'high' : null });
+      o.harness = value; render(); return;
+    }
     const optional = el.dataset.o === 'model' || (el.dataset.o === 'thinking' && o.harness !== 'pi');
     o[el.dataset.o] = optional ? value.trim() || null : value;
   }

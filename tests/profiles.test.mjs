@@ -43,6 +43,7 @@ test('a Claude Code lead gets only the pre-approved team MCP tools, the run prom
   assert.deepEqual(team.args, ['/plugin/src/cli.mjs', 'mcp']);
   assert.deepEqual(team.env, { HERDR_ENV: '1', HERDR_SOCKET_PATH: '/sock', HERDR_ORCH_RUN: '/state/run' }, 'only Herdr variables are forwarded');
   assert.equal(env.MCP_PROTOCOL_NEGOTIATION, 'legacy');
+  assert.ok(Number(env.MAX_MCP_OUTPUT_TOKENS) >= 8 * 32_000 / 4, 'team_wait can return 8 full reports untruncated');
   const model = leadLaunch('/plugin', '/state/run', { ...config, orchestrator: { harness: 'claude', model: 'claude-opus-5-5', thinking: null } }, {}).args;
   assert.equal(model[model.indexOf('--model') + 1], 'claude-opus-5-5');
   assert.ok(!model.includes('--effort'));

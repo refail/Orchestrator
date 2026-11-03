@@ -282,10 +282,12 @@ test('a worker waiting for the user in its tab is flagged and ends a wait when i
   const [still] = await waitForTasks(run, [task.id], 300, undefined, undefined, inspect, 10);
   assert.ok(Date.now() - began >= 290, 'already waiting is not news');
   assert.equal(still.waiting, true);
-  setTimeout(() => { agent = 'working'; }, 20); // The user answers the prompt…
-  setTimeout(() => { agent = 'blocked'; }, 80); // …and the worker asks again.
-  const [again] = await waitForTasks(run, [task.id], 60_000, undefined, undefined, inspect, 10);
+  setTimeout(() => { agent = 'working'; }, 100); // The user answers the prompt…
+  setTimeout(() => { agent = 'blocked'; }, 300); // …and the worker asks again.
+  const asked = Date.now();
+  const [again] = await waitForTasks(run, [task.id], 5000, undefined, undefined, inspect, 10);
   assert.equal(again.waiting, true);
+  assert.ok(Date.now() - asked < 2000, 'returned on the new prompt, not at the deadline');
   const [unknownPane] = await waitForTasks(run, [task.id], 10, undefined, undefined, async () => undefined, 10);
   assert.equal(unknownPane.waiting, undefined, 'no Herdr information, no flag');
   finishTask(run, task.id, { status: 'completed', text: 'Done' });
@@ -329,4 +331,17 @@ test('when the lead exits, completed worker panes close even if never collected;
   await closeCompletedPanes(run, async terminal => { closed.push(terminal); return true; });
   assert.deepEqual(closed, [`term-${done.id}`], 'once, and only the completed one');
   assert.ok(running.id);
+});
+
+test('a failed Herdr poll does not look like a worker that just started waiting', async t => {
+  const { run } = fixture(t);
+  const task = await delegate(run, { role: 'researcher', title: 'Find', brief: 'Find' }, tracked);
+  let calls = 0;
+  // Blocked throughout, but the second Herdr call fails.
+  const inspect = async () => (++calls === 2 ? undefined : new Map([[`term-${task.id}`, 'blocked']]));
+  const began = Date.now();
+  const [still] = await waitForTasks(run, [task.id], 500, undefined, undefined, inspect, 10);
+  assert.ok(Date.now() - began >= 490, 'no early return');
+  assert.equal(still.waiting, true);
+  assert.ok(calls > 3);
 });

@@ -61,13 +61,14 @@ async function coordinator(runDir, env) {
   const run = readRun(runDir);
   const lead = leadLaunch(ROOT, runDir, run.config, { ...env, HERDR_ORCH_RUN: runDir });
   const leadEnv = { ...env, ...lead.env }, helpers = [];
-  let child;
+  let child, stopping = false;
   const ignoreInterrupt = () => {}; // The interactive lead handles Ctrl+C itself.
-  const terminate = () => child?.kill('SIGTERM');
+  const terminate = () => { stopping = true; child?.kill('SIGTERM'); };
   process.on('SIGINT', ignoreInterrupt);
   process.on('SIGTERM', terminate);
   try {
     const args = lead.serve ? lead.tui(await opencodeLeadSession(lead, run, leadEnv, helpers)) : lead.args;
+    if (stopping) { process.exitCode = 1; return; } // Terminated while the OpenCode lead was starting.
     child = spawn(lead.command, args, { cwd: run.project, env: leadEnv, stdio: 'inherit' });
     const [code] = await once(child, 'close');
     process.exitCode = code === 0 ? 0 : 1;

@@ -60,6 +60,7 @@ export function checkAgents(config) {
   const lead = message => { throw new Error(`orchestrator: ${message}`); };
   if (!LEAD_HARNESSES.includes(harness)) lead(`harness must be one of ${LEAD_HARNESSES.join(', ')}`);
   if (model === null ? harness !== 'claude' : typeof model !== 'string' || !MODEL.test(model)) lead('model must be a model ID like provider/model');
+  if (harness === 'opencode' && !/^[^/]+\/./.test(model)) lead('OpenCode needs a provider/model ID such as openai/gpt-6.1-sol');
   if (harness === 'pi' && !THINKING.includes(thinking)) lead(`thinking must be one of ${THINKING.join(', ')}`);
   if (harness === 'claude' && thinking !== null && !CLAUDE_EFFORT.includes(thinking)) lead(`effort must be one of ${CLAUDE_EFFORT.join(', ')}`);
   if (harness === 'opencode' && thinking !== null && (typeof thinking !== 'string' || !VARIANT.test(thinking))) lead('effort must be an OpenCode model variant such as medium');

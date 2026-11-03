@@ -69,6 +69,7 @@ test('the lead harness defaults to Pi and validates model and effort per harness
     [{ harness: 'codex', model: 'x/y' }, /harness must be one of pi, claude, opencode/],
     [{ harness: 'pi', thinking: 'high' }, /model must be/],
     [{ harness: 'opencode' }, /model must be/],
+    [{ harness: 'opencode', model: 'gpt-6.1-sol' }, /provider\/model/],
     [{ harness: 'claude', thinking: 'minimal' }, /effort must be one of/],
     [{ harness: 'opencode', model: 'x/y', thinking: 'Not A Variant' }, /OpenCode model variant/],
     [{ harness: 'claude', permissions: 'all' }, /unknown setting "permissions"/],

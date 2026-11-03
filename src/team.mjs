@@ -252,7 +252,8 @@ export async function waitForTasks(runDir, ids, timeoutMs = 30_000, signal, clos
   let open, waitingAtStart, states, inspected = 0;
   while (true) {
     signal?.throwIfAborted();
-    if (inspect && Date.now() - inspected >= inspectEveryMs) { states = await inspect(); inspected = Date.now(); }
+    // A failed Herdr call keeps the last known states rather than looking like a change.
+    if (inspect && Date.now() - inspected >= inspectEveryMs) { states = (await inspect()) ?? states; inspected = Date.now(); }
     const tasks = markWaiting(ids.map(id => taskStatus(runDir, id, true)), states);
     open ??= new Set(tasks.filter(task => !settled(task)).map(task => task.id));
     // A worker already waiting when the call began only ends it by changing again.
@@ -263,6 +264,6 @@ export async function waitForTasks(runDir, ids, timeoutMs = 30_000, signal, clos
       if (closePane) await closeCompleted(tasks, closePane);
       return tasks;
     }
-    await sleep(Math.min(200, deadline - Date.now()), undefined, { signal });
+    await sleep(Math.min(200, inspect ? inspectEveryMs : 200, deadline - Date.now()), undefined, { signal });
   }
 }
