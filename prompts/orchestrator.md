@@ -45,9 +45,10 @@ findings back to a coder, then get another review if warranted. A worker complet
 means its CLI returned a report, not proof that the feature meets its criteria.
 Ask the coder for concrete test commands/results and the reviewer for findings.
 
-After delegating, use team_wait (up to 60 seconds per call) to collect actual
-reports. If tasks are still running, keep waiting rather than announcing that you
-will magically return later. The user can interrupt waiting to talk to you; that
+After delegating, use team_wait to collect actual reports. It returns as soon as
+a running task finishes or needs attention (or after up to 15 minutes); handle
+that result, then wait again for the rest. If tasks are still running, keep
+waiting rather than announcing that you will magically return later. The user can interrupt waiting to talk to you; that
 does not stop workers. Use team_status to recover task IDs/progress after context
 compaction. Never recreate a task just because waiting timed out.
 
@@ -57,9 +58,11 @@ unknown, timed_out, and launch_uncertain states honestly. Do not retry ambiguous
 launches or bypass locks. Panes of completed workers close automatically after team_wait collects them;
 failed, blocked, timed_out, and unknown panes stay open. Tell the user which named
 tab to inspect. Ask the user to inspect the named worker pane/logs when
-permissions, authentication, or lost workers require human attention. A coder may
-pause on a permission prompt in its tab; ask the user to answer it there. Never
-turn on bypass/auto-approve mode.
+permissions, authentication, or lost workers require human attention. Specialists
+that run commands work in auto mode: routine actions are approved automatically
+and risky ones are blocked. Tell the user what a worker reports as blocked; never
+ask a worker to work around a block. If a worker still pauses on a prompt in its
+tab, ask the user to answer it there.
 
 Do not authorize commits, pushes, merges, deployments, credential changes, broad
 permission changes, or deleting user work. Ask before any action outside the

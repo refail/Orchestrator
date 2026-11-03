@@ -1,15 +1,17 @@
 import { spawn } from 'node:child_process';
-import { readdirSync, realpathSync } from 'node:fs';
+import { readdirSync, realpathSync, mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { once } from 'node:events';
-import { createRun, readRun, listTasks, publish, taskDir, recoverTask, pruneRuns } from './team.mjs';
-import { invocation, openPane, currentPane, requireHerdr, PLUGIN_ID } from './herdr.mjs';
-import { piLaunch } from './profiles.mjs';
+import { createRun, readRun, listTasks, publish, taskDir, recoverTask, pruneRuns, closeCompletedPanes } from './team.mjs';
+import { invocation, openPane, currentPane, requireHerdr, closeWorkerPane, PLUGIN_ID } from './herdr.mjs';
+import { leadLaunch } from './profiles.mjs';
 import { snapshotAgents } from './agents.mjs';
 import { runWorker } from './worker.mjs';
 import { serveDashboard } from './dashboard.mjs';
+import { serveMcp } from './mcp.mjs';
+import { teamTools } from './tools.mjs';
 
 const ROOT = fileURLToPath(new URL('../', import.meta.url));
 function required(env, key) {
@@ -27,21 +29,59 @@ function runsFor(stateRoot, project) {
     .filter(({ run }) => run.project === project)
     .sort((a, b) => b.run.createdAt.localeCompare(a.run.createdAt));
 }
+// OpenCode lead: a private `serve --stdio` in its own process group (Ctrl+C
+// belongs to the TUI), then a session with the lead's agent and model for the
+// TUI to attach to. Returns the server URL.
+export async function opencodeLeadSession(lead, run, env, helpers) {
+  mkdirSync(lead.configDir, { recursive: true, mode: 0o700 });
+  const server = spawn(lead.command, lead.serve, { cwd: run.project, env, detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
+  helpers.push(server);
+  let stderr = '', buffer = '';
+  server.stderr.on('data', chunk => { stderr = `${stderr}${chunk}`.slice(-4000); });
+  const url = await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`OpenCode server did not report its URL within 20s: ${stderr}`)), 20_000);
+    server.stdout.on('data', chunk => {
+      buffer += chunk;
+      const end = buffer.indexOf('\n');
+      if (end === -1) return;
+      clearTimeout(timer);
+      try { resolve(JSON.parse(buffer.slice(0, end)).url); } catch (error) { reject(error); }
+    });
+    server.once('error', error => { clearTimeout(timer); reject(error); });
+    server.once('close', code => { clearTimeout(timer); reject(new Error(`OpenCode server exited (${code}): ${stderr}`)); });
+  });
+  const response = await fetch(`${url}/api/session`, {
+    method: 'POST', signal: AbortSignal.timeout(20_000), body: JSON.stringify({ ...lead.session, location: { directory: run.project } }),
+    headers: { authorization: `Basic ${Buffer.from(`opencode:${lead.password}`).toString('base64')}`, 'content-type': 'application/json' },
+  });
+  if (!response.ok) throw new Error(`OpenCode could not create the lead session (${response.status}): ${(await response.text()).slice(0, 500)}`);
+  return url;
+}
 async function coordinator(runDir, env) {
   const run = readRun(runDir);
-  const { command, args } = piLaunch(ROOT, runDir, run.config);
-  const child = spawn(command, args, { cwd: run.project, env, stdio: 'inherit' });
-  const ignoreInterrupt = () => {}; // Interactive Pi handles Ctrl+C itself.
-  const terminate = () => child.kill('SIGTERM');
+  const lead = leadLaunch(ROOT, runDir, run.config, { ...env, HERDR_ORCH_RUN: runDir });
+  const leadEnv = { ...env, ...lead.env }, helpers = [];
+  let child;
+  const ignoreInterrupt = () => {}; // The interactive lead handles Ctrl+C itself.
+  const terminate = () => child?.kill('SIGTERM');
   process.on('SIGINT', ignoreInterrupt);
   process.on('SIGTERM', terminate);
   try {
+    const args = lead.serve ? lead.tui(await opencodeLeadSession(lead, run, leadEnv, helpers)) : lead.args;
+    child = spawn(lead.command, args, { cwd: run.project, env: leadEnv, stdio: 'inherit' });
     const [code] = await once(child, 'close');
     process.exitCode = code === 0 ? 0 : 1;
   } finally {
     process.off('SIGINT', ignoreInterrupt);
     process.off('SIGTERM', terminate);
+    for (const helper of helpers) {
+      helper.stdin.end(); // `serve --stdio` stops when its stdin closes.
+      try { process.kill(-helper.pid, 'SIGTERM'); } catch { /* already gone */ }
+    }
   }
+  // The lead may exit before collecting finished work; close completed worker
+  // panes so their TUIs stop. Others stay open for inspection.
+  try { await closeCompletedPanes(runDir, terminal => closeWorkerPane(terminal, env)); } catch { /* best effort */ }
 }
 async function statusPane(env, output) {
   const state = required(env, 'HERDR_PLUGIN_STATE_DIR');
@@ -54,12 +94,16 @@ async function statusPane(env, output) {
     if (!runs.length) output.write('No feature runs yet. Invoke personal.orchestrator.start in this workspace.\n');
     for (const { dir, run } of runs) {
       output.write(`Run ${run.id} (${run.createdAt})${run.legacy ? ' · older plugin version, read-only' : ''}\n`);
-      const tasks = listTasks(dir);
+      let tasks;
+      try { tasks = listTasks(dir); } catch (error) { output.write(`  Cannot read its tasks: ${error.message}\n  Records: ${dir}\n\n`); continue; }
       if (!tasks.length) output.write('  No assignments yet. Talk to the orchestrator.\n');
-      for (const task of tasks) output.write(`  ${task.status.padEnd(17)} ${task.role.padEnd(11)} ${task.title}\n  ${task.id}\n`);
+      for (const task of tasks) {
+        const age = task.finished ? '' : ` · ${Math.floor((Date.now() - Date.parse(task.createdAt)) / 60_000)} min`;
+        output.write(`  ${task.status.padEnd(17)} ${task.role.padEnd(11)} ${task.title}${age}\n  ${task.id}${task.detail ? `\n  ${task.detail}` : ''}\n`);
+      }
       output.write(`  Records: ${dir}\n\n`);
     }
-    output.write('\nr refresh · q close\n');
+    output.write('\nRefreshes every 2 s · r refresh · q close\n');
   };
   render();
   if (!process.stdin.isTTY) return;
@@ -67,10 +111,13 @@ async function statusPane(env, output) {
   process.stdin.resume();
   try {
     await new Promise((resolve, reject) => {
+      const end = error => { clearInterval(timer); process.stdin.off('data', input); error ? reject(error) : resolve(); };
+      const refresh = () => { try { render(); } catch (error) { end(error); } };
+      const timer = setInterval(refresh, 2000);
       const input = chunk => {
         const key = chunk.toString();
-        if (key === 'r') { try { render(); } catch (error) { process.stdin.off('data', input); reject(error); } }
-        else if (key === 'q' || key === '\x03' || key === '\x1b') { process.stdin.off('data', input); resolve(); }
+        if (key === 'r') refresh();
+        else if (key === 'q' || key === '\x03' || key === '\x1b') end();
       };
       process.stdin.on('data', input);
     });
@@ -94,6 +141,13 @@ export async function main(mode = process.argv[2], {
       });
     } catch (error) { if (error.code !== 'EEXIST') throw error; }
     return;
+  }
+  if (mode === 'mcp') {
+    // Team tools for a Claude Code or OpenCode lead, over stdio. The lead starts
+    // it with this run's HERDR_ORCH_RUN and the coordinator pane's Herdr env.
+    const tools = teamTools(required(env, 'HERDR_ORCH_RUN'));
+    // OpenCode prefixes MCP tool names with the server name ("team").
+    return serveMcp(process.argv[3] === 'opencode' ? tools.map(tool => ({ ...tool, name: tool.name.replace(/^team_/, '') })) : tools);
   }
   if (mode === 'inspect') {
     const dir = process.argv[3];

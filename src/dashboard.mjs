@@ -3,7 +3,7 @@ import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { join } from 'node:path';
-import { ROOT, loadAgents, saveAgents, HARNESSES, TOOL_PRESETS, THINKING, CLAUDE_EFFORT } from './agents.mjs';
+import { ROOT, loadAgents, saveAgents, HARNESSES, LEAD_HARNESSES, TOOL_PRESETS, THINKING, CLAUDE_EFFORT } from './agents.mjs';
 import { listSkills, SKILLS_DIR } from './skills.mjs';
 
 // On-demand settings page. It lives only while a browser tab uses it: the page
@@ -28,7 +28,7 @@ export async function serveDashboard({ root = ROOT, skillsDir = SKILLS_DIR, open
     response.end(type === 'application/json' ? JSON.stringify(body) : body);
   };
   const state = () => ({ ...loadAgents(root), skills: listSkills(skillsDir),
-    options: { harnesses: HARNESSES, tools: TOOL_PRESETS, thinking: THINKING, claudeEffort: CLAUDE_EFFORT } });
+    options: { harnesses: HARNESSES, leadHarnesses: LEAD_HARNESSES, tools: TOOL_PRESETS, thinking: THINKING, claudeEffort: CLAUDE_EFFORT } });
 
   const server = createServer(async (request, response) => {
     // Only same-host requests: blocks DNS rebinding and cross-site writes.

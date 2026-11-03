@@ -1,5 +1,5 @@
 import { randomUUID, createHash } from 'node:crypto';
-import { mkdirSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, rmSync, readdirSync, statSync, lstatSync } from 'node:fs';
+import { mkdirSync, realpathSync, readFileSync, writeFileSync, linkSync, unlinkSync, rmSync, readdirSync, statSync, lstatSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { checkSnapshot, teamSection, NAME } from './agents.mjs';
@@ -7,6 +7,10 @@ import { loadSkill, SKILLS_DIR } from './skills.mjs';
 
 const ID = /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const TERMINAL = ['completed', 'failed', 'blocked', 'interrupted', 'timed_out'];
+// Unfinished states that will not change on their own; the user must look.
+const ATTENTION = ['unknown', 'launch_uncertain'];
+// A runner writes started.json within seconds of its pane opening.
+const START_GRACE_MS = 2 * 60_000;
 export function json(path) { return JSON.parse(readFileSync(path, 'utf8')); }
 export function optionalJson(path) {
   try { return json(path); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
@@ -59,7 +63,7 @@ export function finishTask(runDir, id, outcome) {
   publish(join(taskDir(runDir, id), 'result.json'), { ...outcome, taskId: id, finishedAt: new Date().toISOString() });
   const path = leasePath(run);
   const lease = optionalJson(path);
-  if (lease?.taskId === id && lease.runDir === runDir) unlinkSync(path);
+  if (lease?.taskId === id && lease.runDir === realpathSync(runDir)) unlinkSync(path);
 }
 function alive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { if (error.code === 'ESRCH') return false; if (error.code === 'EPERM') return true; throw error; }
@@ -72,10 +76,15 @@ export function taskStatus(runDir, id, full = false) {
   const started = optionalJson(join(dir, 'started.json'));
   const uncertain = optionalJson(join(dir, 'launch-error.json'));
   let status = result?.status ?? (started ? 'running' : uncertain ? 'launch_uncertain' : 'starting');
+  let detail = uncertain?.message;
   if (!result && started && !alive(started.pid)) status = 'unknown';
+  if (status === 'starting' && existsSync(join(dir, 'launch.json')) && Date.now() - Date.parse(task.createdAt) > START_GRACE_MS) {
+    status = 'unknown';
+    detail = 'The worker pane opened but its runner never started; check that tab, close it, then recover the task.';
+  }
   return { id, role: task.role, title: task.title, status, finished: Boolean(result), createdAt: task.createdAt,
     report: result ? result.text.slice(0, full ? 32_000 : 500) : undefined,
-    detail: uncertain?.message, directory: dir };
+    detail, directory: dir };
 }
 export function listTasks(runDir, full = false) {
   readRun(runDir);
@@ -210,19 +219,47 @@ async function closeCompleted(tasks, closePane) {
     if (task.status !== 'completed') continue;
     const closed = join(task.directory, 'closed.json');
     if (optionalJson(closed)) continue;
-    const terminal = optionalJson(join(task.directory, 'launch.json'))?.pane?.terminal_id;
-    try { publish(closed, { closed: await closePane(terminal), at: new Date().toISOString() }); }
+    try { publish(closed, { closed: await closePane(terminalOf(task)), at: new Date().toISOString() }); }
     catch (error) { task.closeError = String(error.message).slice(0, 500); }
   }
 }
-export async function waitForTasks(runDir, ids, timeoutMs = 30_000, signal, closePane) {
+export async function closeCompletedPanes(runDir, closePane) {
+  const tasks = listTasks(runDir);
+  await closeCompleted(tasks, closePane);
+  return tasks;
+}
+const terminalOf = task => optionalJson(join(task.directory, 'launch.json'))?.pane?.terminal_id;
+// Mark unfinished workers whose TUI Herdr sees waiting for the user (a
+// permission prompt or question). `states` maps terminal IDs to Herdr's
+// agent_status; it is a hint for the user, never a recorded outcome.
+export function markWaiting(tasks, states) {
+  for (const task of tasks) {
+    if (task.finished || !states || states.get(terminalOf(task)) !== 'blocked') continue;
+    task.waiting = true;
+    task.detail = 'Waiting for input in its Herdr tab (permission prompt or question). Ask the user to answer it there.';
+  }
+  return tasks;
+}
+// Returns when every task has settled, as soon as one that was still running
+// finishes, needs attention or starts waiting for the user, or at the deadline.
+// Long waits that end on the first change spare the lead from re-polling.
+export const MAX_WAIT_MS = 15 * 60_000;
+const settled = task => task.finished || ATTENTION.includes(task.status);
+export async function waitForTasks(runDir, ids, timeoutMs = 30_000, signal, closePane, inspect, inspectEveryMs = 5000) {
   if (!Array.isArray(ids) || ids.length < 1 || ids.length > 8) throw new Error('Wait for 1–8 task ids');
-  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > 60_000) throw new Error('Wait timeout must be 1–60000 ms');
+  if (!Number.isInteger(timeoutMs) || timeoutMs < 1 || timeoutMs > MAX_WAIT_MS) throw new Error(`Wait timeout must be 1–${MAX_WAIT_MS} ms`);
   const deadline = Date.now() + timeoutMs;
+  let open, waitingAtStart, states, inspected = 0;
   while (true) {
     signal?.throwIfAborted();
-    const tasks = ids.map(id => taskStatus(runDir, id, true));
-    if (tasks.every(task => task.finished) || Date.now() >= deadline) {
+    if (inspect && Date.now() - inspected >= inspectEveryMs) { states = await inspect(); inspected = Date.now(); }
+    const tasks = markWaiting(ids.map(id => taskStatus(runDir, id, true)), states);
+    open ??= new Set(tasks.filter(task => !settled(task)).map(task => task.id));
+    // A worker already waiting when the call began only ends it by changing again.
+    waitingAtStart ??= new Set(tasks.filter(task => task.waiting).map(task => task.id));
+    for (const task of tasks) if (!task.waiting) waitingAtStart.delete(task.id); // Answered; a new prompt is news.
+    const changed = task => (open.has(task.id) && settled(task)) || (task.waiting && !waitingAtStart.has(task.id));
+    if (tasks.every(settled) || tasks.some(changed) || Date.now() >= deadline) {
       if (closePane) await closeCompleted(tasks, closePane);
       return tasks;
     }

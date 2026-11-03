@@ -58,6 +58,23 @@ test('agent validation fails closed with readable messages', () => {
   assert.equal(checkAgents(withAgent({ harness: 'opencode', model: 'openai/gpt-6.1-sol', effort: 'medium' })).agents.coder.effort, 'medium');
 });
 
+test('the lead harness defaults to Pi and validates model and effort per harness', () => {
+  const base = settings(DEFAULTS);
+  const lead = orchestrator => checkAgents({ ...base, orchestrator }).orchestrator;
+  assert.deepEqual(lead({ model: 'x/y', thinking: 'high' }), { harness: 'pi', model: 'x/y', thinking: 'high' }, 'older configs and runs are Pi leads');
+  assert.deepEqual(lead({ harness: 'claude' }), { harness: 'claude', model: null, thinking: null }, 'Claude defaults are allowed');
+  assert.deepEqual(lead({ harness: 'claude', model: 'claude-opus-5-5', thinking: 'xhigh' }).thinking, 'xhigh');
+  assert.equal(lead({ harness: 'opencode', model: 'openai/gpt-6.1-sol', thinking: 'medium' }).thinking, 'medium');
+  for (const [orchestrator, message] of [
+    [{ harness: 'codex', model: 'x/y' }, /harness must be one of pi, claude, opencode/],
+    [{ harness: 'pi', thinking: 'high' }, /model must be/],
+    [{ harness: 'opencode' }, /model must be/],
+    [{ harness: 'claude', thinking: 'minimal' }, /effort must be one of/],
+    [{ harness: 'opencode', model: 'x/y', thinking: 'Not A Variant' }, /OpenCode model variant/],
+    [{ harness: 'claude', permissions: 'all' }, /unknown setting "permissions"/],
+  ]) assert.throws(() => lead(orchestrator), message);
+});
+
 test('the orchestrator sees every agent with its capabilities', () => {
   const section = teamSection(checkAgents(settings(DEFAULTS)));
   for (const name of Object.keys(DEFAULTS.agents)) assert.match(section, new RegExp(`\\*\\*${name}\\*\\*`));

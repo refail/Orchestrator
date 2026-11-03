@@ -2,7 +2,7 @@ id = "personal.orchestrator"
 name = "Feature Orchestrator"
 version = "0.1.0"
 min_herdr_version = "0.7.1"
-description = "Talk to a coordination-only Pi lead; delegate to Claude Code and OpenCode in visible panes."
+description = "Talk to a coordination-only lead (Pi, Claude Code or OpenCode); delegate to Claude Code and OpenCode in visible panes."
 platforms = ["macos", "linux"]
 
 [[actions]]

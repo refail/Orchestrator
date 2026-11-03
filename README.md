@@ -1,6 +1,7 @@
 # Personal feature orchestrator
 
-A local Herdr **0.7.1** plugin. Talk to Pi about one feature; it delegates project
+A local Herdr plugin (0.7.1+, tested with **0.9.5**). Talk to the lead (Pi, Claude
+Code or OpenCode) about one feature; it delegates project
 work to visible specialist tabs. No third-party orchestration package, service,
 new npm dependencies, or global agent configuration changes.
 
@@ -20,10 +21,22 @@ shipped team:
 The simplifier can edit project files but cannot run shell commands or tests, so Pi
 should have a coder run checks afterwards.
 
-Pi has only `team_delegate`, `team_status`, `team_wait`, and `team_skill`. Built-in
-tools, other extensions, MCP, project context files, Pi's own skill discovery, and
-shell execution are disabled in this dedicated session. Ordinary Pi sessions
-remain unchanged.
+The lead has only `team_delegate`, `team_status`, `team_wait`, and `team_skill`.
+Choose its harness in the settings page (`orchestrator.harness` in `agents.json`):
+
+- **Pi** (default): the tools come from the `pi/orchestrator.ts` extension.
+  Built-in tools, other extensions, MCP, project context files, Pi's own skill
+  discovery, and shell execution are disabled in this dedicated session.
+- **Claude Code**: `--tools ""` removes every built-in tool, the team tools come
+  from the plugin's stdio MCP server (`src/cli.mjs mcp`, `--strict-mcp-config`),
+  and `--permission-mode dontAsk` with `--allowedTools mcp__team__*` runs them
+  without prompts while denying anything else. `model: null` uses your Claude
+  default; `thinking` is Claude's `--effort`. Your user CLAUDE.md and hooks still
+  load (as in your normal Claude sessions); they cannot add tools.
+- **OpenCode**: the same MCP server, with every other permission denied.
+  `model` is required; `thinking` is an optional model variant.
+
+Ordinary Pi, Claude Code and OpenCode sessions remain unchanged.
 
 ## Agent skills
 
@@ -62,8 +75,9 @@ checkout lease.
 
 ## Install
 
-Requirements: macOS/Linux, Node.js 22+, Herdr 0.7.1, Pi 1.2.0+, Claude Code, and
-OpenCode **v2** (tested with **2.0.30**). Authenticate the three agent CLIs normally
+Requirements: macOS/Linux, Node.js 22+, Herdr 0.7.1+ (tested with 0.9.5), Pi 1.2.0+, Claude Code, and
+OpenCode **v2** (tested with **2.2.5**; 2.2.3+ needs this version of the plugin, see
+below). Authenticate the three agent CLIs normally
 beforehand. OpenCode v1 is no longer supported by this adapter.
 
 **Inside a Herdr-managed terminal pane**, run:
@@ -112,7 +126,8 @@ and every step:
 - **Claude Code** gets the brief as its initial prompt. A `Stop`/`StopFailure`
   hook from `--settings` runs `src/cli.mjs claude-hook`, which records Claude's
   first final message (`last_assistant_message`) in `stop.json`. That turn is
-  the report. Permission prompts appear in the tab; answer them there.
+  the report. Agents with edit + command tools run in auto mode, so routine
+  actions need no approval; any prompt that still appears waits in the tab.
 - **OpenCode** runs a private localhost `opencode serve --stdio` with a random
   password. A headless `opencode run --server … --session …` produces the
   machine-readable report, and the TUI attaches to the same session.
@@ -137,8 +152,9 @@ For status, type `/team` in Pi (no model call), or run:
 herdr plugin action invoke personal.orchestrator.status
 ```
 
-The status overlay shows recent runs for the selected project: `r` refreshes;
-`q` closes it. Worker tabs print their role, task ID, report, and outcome. Starting
+The status overlay shows recent runs for the selected project, with how long
+unfinished tasks have been running. It refreshes every 2 seconds (`r` refreshes
+now); `q` closes it. Worker tabs print their role, task ID, report, and outcome. Starting
 again makes a new feature run; it does not replace or stop old agents.
 
 ## Permissions and limitations
@@ -151,15 +167,22 @@ again makes a new feature run; it does not replace or stop old agents.
   private `--standalone` server and empty per-task config directory, with project
   config disabled. Ambient plugins, MCP servers, and user-global agent settings
   are not loaded; built-in authentication still uses existing credentials.
+  Policies deny `mcp.use`, `skill.use` and `plugin.use`. (Before OpenCode 2.2.3 a
+  single `integration.use` deny covered these; since 2.2.3 it removes every model
+  provider instead, so older plugin versions start OpenCode workers with no models.)
   Shell, edits (except the simplifier's), nested agents, external tools, and
   arbitrary external directories are denied. Review receives a bounded git status/diff snapshot and can inspect
   files, but cannot run tests or fix code. System-managed policies can restrict
   local settings; the installed v2 resolver is included in tests.
 - The security agent runs Claude with only Read/Glob/Grep and default permissions.
-- The coder's Claude uses `acceptEdits`, not permission-bypass mode. Bash/tests still follow
-  your existing Claude permissions; a command needing approval waits for you in
-  the coder's tab (the task timeout still applies). The plugin never enables
-  YOLO/auto mode.
+- Claude agents with edit + command tools (the coder) run in Claude Code's
+  **auto mode** (`--permission-mode auto`): a classifier approves routine edits
+  and commands and blocks risky ones (force pushes, `curl | sh`, production
+  deploys, …); your deny rules still apply. Edit-only agents use `acceptEdits`,
+  read-only agents default permissions. Auto mode needs a supported model (Opus
+  4.6+/Sonnet 4.6+ on the Anthropic API); if it is unavailable, or after
+  repeated blocks, Claude falls back to prompting in the coder's tab (the task
+  timeout still applies). The plugin never uses permission-bypass mode.
 - An assignment ends at the worker's first final answer. Whatever you then type
   into a still-open TUI is outside the record and the checkout lease, like any
   other human edit. The lease is released when the outcome is recorded.
@@ -171,8 +194,12 @@ again makes a new feature run; it does not replace or stop old agents.
 - Default limits: 3 concurrent assignments per run, 30 total tasks, a per-agent
   timeout (30 minutes for the coder, 15 for the others), and 8 MiB of captured output. Reports passed to Pi are capped at 32,000
   characters. There is no total dollar budget or automatic remote cost control.
-- Pi waits for task records, not Herdr's idle detection. Interrupting Pi's wait
-  does **not** stop workers. To stop a worker, quit its TUI (Ctrl+C belongs to
+- The lead waits for task records, not Herdr's idle detection. `team_wait` returns
+  as soon as a running task finishes (or after up to 15 minutes), so the lead
+  does not re-poll every few seconds. Herdr's `agent_status` is used only as a
+  hint: a worker whose tab shows `blocked` (a permission prompt or question) is
+  reported as `waiting: true`, and the lead tells you which tab to answer.
+  Interrupting the lead's wait does **not** stop workers. To stop a worker, quit its TUI (Ctrl+C belongs to
   the TUI) or close its tab; the runner records `interrupted` and stops the
   OpenCode server/client process groups. Claude runs in the pane's foreground
   group so it can own the terminal; closing the pane stops it. Deliberately
@@ -181,7 +208,8 @@ again makes a new feature run; it does not replace or stop old agents.
   unresolved attempt and checkout lease. Never delete the lease by hand: inspect
   the exact task/logs, then run
   `node src/cli.mjs recover RUN_DIR TASK_ID`. It records `interrupted` and
-  releases the lease when the runner process is gone (`unknown`); for any other
+  releases the lease when the runner process is gone, or when a worker pane
+  opened but its runner never started within 2 minutes (both `unknown`); for any other
   state, first close the pane and check no agent processes remain, then add
   `--confirm`. A dispatch lock left by a crashed process is replaced
   automatically. Only completed panes are closed automatically.

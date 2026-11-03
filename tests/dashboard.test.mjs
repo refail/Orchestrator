@@ -71,6 +71,18 @@ test('saving from the dashboard writes agents.json and prompts, and refuses inva
   assert.ok(!existsSync(join(root, 'prompts/researcher.md')));
 });
 
+test('the dashboard offers Pi, Claude Code and OpenCode leads and saves the lead harness', async t => {
+  const { root, api } = await start(t);
+  const { config, prompts, options } = await (await api('GET', '/api/state')).json();
+  assert.deepEqual(options.leadHarnesses, ['pi', 'claude', 'opencode']);
+  const saved = await api('PUT', '/api/state', { config: { ...config, orchestrator: { harness: 'claude', model: null, thinking: 'xhigh' } }, prompts });
+  assert.equal(saved.status, 200, await saved.clone().text());
+  assert.deepEqual(JSON.parse(readFileSync(join(root, 'agents.json'), 'utf8')).orchestrator, { harness: 'claude', model: null, thinking: 'xhigh' });
+  const refused = await api('PUT', '/api/state', { config: { ...config, orchestrator: { harness: 'opencode', model: null, thinking: null } }, prompts });
+  assert.equal(refused.status, 400);
+  assert.match((await refused.json()).error, /orchestrator: model/);
+});
+
 test('the server stops when its tab closes (after a reload grace period) or goes idle', async t => {
   const closing = await start(t, { closeGraceMs: 50 });
   assert.equal((await closing.api('POST', '/api/close')).status, 200);

@@ -89,10 +89,11 @@ let options, skills = [], saved, draft, current = 'orchestrator', serverGone = f
 const $ = selector => document.querySelector(selector);
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const NAME = /^[a-z][a-z0-9-]{0,31}$/;
+const HARNESS = { pi: 'Pi', claude: 'Claude Code', opencode: 'OpenCode' };
 const TOOLS = {
   readonly: ['Read-only', 'Read and search files. No edits, no commands.'],
   edit: ['Can edit', 'Read and edit files. Cannot run commands or tests.'],
-  full: ['Can edit and run commands', 'Read, edit, and run shell commands and tests.'],
+  full: ['Can edit and run commands', 'Read, edit, and run shell commands and tests. Claude Code runs these in auto mode (no permission prompts; risky actions are blocked).'],
 };
 
 async function api(method, path, body) {
@@ -114,7 +115,8 @@ function toDraft(state) {
 function toPayload(d) {
   const agents = {}, prompts = { orchestrator: d.orchestrator.prompt };
   for (const { name, prompt, ...agent } of d.agents) { agents[name] = agent; prompts[name] = prompt; }
-  return { config: { orchestrator: { model: d.orchestrator.model, thinking: d.orchestrator.thinking }, limits: d.limits, agents }, prompts };
+  const { harness, model, thinking } = d.orchestrator;
+  return { config: { orchestrator: { harness, model, thinking }, limits: d.limits, agents }, prompts };
 }
 const dirty = () => JSON.stringify(draft) !== JSON.stringify(saved);
 function problems() {
@@ -138,8 +140,8 @@ function refreshButtons() {
 
 function renderNav() {
   const item = (id, label, tag = '') => `<a href="#" data-go="${esc(id)}" class="${current === id ? 'active' : ''}"><span>${esc(label)}</span><span class="tag">${esc(tag)}</span></a>`;
-  $('#nav').innerHTML = `<h2>Lead</h2>${item('orchestrator', 'Orchestrator', 'Pi')}<h2>Agents</h2>` +
-    draft.agents.map((agent, i) => item(`agent:${i}`, agent.name || '(unnamed)', agent.harness === 'claude' ? 'Claude' : 'OpenCode')).join('') +
+  $('#nav').innerHTML = `<h2>Lead</h2>${item('orchestrator', 'Orchestrator', HARNESS[draft.orchestrator.harness])}<h2>Agents</h2>` +
+    draft.agents.map((agent, i) => item(`agent:${i}`, agent.name || '(unnamed)', HARNESS[agent.harness])).join('') +
     `<button id="add">+ New agent</button>`;
 }
 function modelList() {
@@ -148,10 +150,17 @@ function modelList() {
 }
 function renderOrchestrator() {
   const o = draft.orchestrator;
-  return `<h2>Orchestrator</h2><p class="hint">The Pi lead you talk to. It only plans and delegates to the agents.</p>
+  const thinking = o.harness === 'pi'
+    ? `<select data-o="thinking">${options.thinking.map(level => `<option ${level === o.thinking ? 'selected' : ''}>${level}</option>`).join('')}</select>`
+    : o.harness === 'claude'
+      ? `<select data-o="thinking"><option value="">Default</option>${options.claudeEffort.map(level => `<option ${level === o.thinking ? 'selected' : ''}>${level}</option>`).join('')}</select>`
+      : `<input type="text" data-o="thinking" value="${esc(o.thinking ?? '')}" placeholder="Default" list="variants" spellcheck="false"><datalist id="variants"><option value="low"><option value="medium"><option value="high"></datalist>`;
+  return `<h2>Orchestrator</h2><p class="hint">The lead you talk to. It only plans and delegates to the agents, whichever harness runs it.</p>
   <div class="grid">
-    <label class="field">Model<input type="text" data-o="model" value="${esc(o.model)}" list="models" spellcheck="false"></label>
-    <label class="field">Thinking<select data-o="thinking">${options.thinking.map(level => `<option ${level === o.thinking ? 'selected' : ''}>${level}</option>`).join('')}</select></label>
+    <label class="field">Harness<span class="hint">The agent CLI that runs the lead.</span><select data-o="harness">${options.leadHarnesses.map(h => `<option value="${h}" ${h === o.harness ? 'selected' : ''}>${HARNESS[h]}</option>`).join('')}</select></label>
+    <label class="field">Model<span class="hint">${o.harness === 'claude' ? 'Empty uses your Claude default.' : 'provider/model, required.'}</span><input type="text" data-o="model" value="${esc(o.model ?? '')}" list="models" spellcheck="false" placeholder="${o.harness === 'claude' ? 'Claude default' : 'provider/model'}"></label>
+    <label class="field">${o.harness === 'pi' ? 'Thinking' : 'Reasoning effort'}<span class="hint">${o.harness === 'pi' ? 'Pi --thinking.' : o.harness === 'claude' ? 'Claude --effort.' : 'OpenCode model variant.'}</span>${thinking}</label>
+    <div></div>
     <label class="field">Parallel assignments<span class="hint">How many agents can work at once (1–8).</span><input type="number" min="1" max="8" data-l="maxParallel" value="${draft.limits.maxParallel}"></label>
     <label class="field">Assignments per feature<span class="hint">Total tasks allowed in one run (1–100).</span><input type="number" min="1" max="100" data-l="maxTasks" value="${draft.limits.maxTasks}"></label>
     <label class="field full">Prompt<span class="hint">A “Your specialists” section listing every agent below is appended automatically for each run.</span>
@@ -171,7 +180,7 @@ function renderAgent(i) {
     <label class="field">Name<span class="hint">The role Pi uses. Lowercase, digits, dashes.</span><input type="text" data-a="name" value="${esc(a.name)}" spellcheck="false"></label>
     <label class="field">Timeout (minutes)<span class="hint">The worker is stopped after this long.</span><input type="number" min="1" max="240" step="1" data-a="timeoutMinutes" value="${a.timeoutMinutes}"></label>
     <label class="field full">When to use<span class="hint">Shown to Pi so it knows when to pick this agent.</span><textarea class="desc" data-a="description">${esc(a.description)}</textarea></label>
-    <label class="field">Harness<select data-a="harness">${options.harnesses.map(h => `<option value="${h}" ${h === a.harness ? 'selected' : ''}>${h === 'claude' ? 'Claude Code' : 'OpenCode'}</option>`).join('')}</select></label>
+    <label class="field">Harness<select data-a="harness">${options.harnesses.map(h => `<option value="${h}" ${h === a.harness ? 'selected' : ''}>${HARNESS[h]}</option>`).join('')}</select></label>
     <label class="field">Model<span class="hint">${a.harness === 'claude' ? 'Empty uses your Claude default.' : 'provider/model, required.'}</span><input type="text" data-a="model" value="${esc(a.model ?? '')}" list="models" spellcheck="false" placeholder="${a.harness === 'claude' ? 'Claude default' : 'openai/…'}"></label>
     <label class="field">Reasoning effort<span class="hint">${a.harness === 'claude' ? 'Claude --effort.' : 'OpenCode model variant.'}</span>${effort}</label>
     <div></div>
@@ -202,7 +211,12 @@ function render() {
 function onInput(event) {
   const el = event.target;
   const value = el.type === 'checkbox' ? el.checked : el.type === 'number' ? Number(el.value) : el.value;
-  if (el.dataset.o) draft.orchestrator[el.dataset.o] = value;
+  if (el.dataset.o) {
+    const o = draft.orchestrator;
+    if (el.dataset.o === 'harness') { o.harness = value; o.thinking = value === 'pi' ? 'high' : null; render(); return; }
+    const optional = el.dataset.o === 'model' || (el.dataset.o === 'thinking' && o.harness !== 'pi');
+    o[el.dataset.o] = optional ? value.trim() || null : value;
+  }
   else if (el.dataset.l) draft.limits[el.dataset.l] = value;
   else if (el.dataset.a || el.dataset.skillName) {
     const a = draft.agents[Number(current.slice(6))];

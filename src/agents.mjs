@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url';
 // Runs snapshot both (see snapshotAgents) so later edits never change a live run.
 export const ROOT = fileURLToPath(new URL('../', import.meta.url));
 export const HARNESSES = ['claude', 'opencode'];
+export const LEAD_HARNESSES = ['pi', 'claude', 'opencode'];
 // readonly: read/search · edit: + file edits · full: + shell commands.
 export const TOOL_PRESETS = ['readonly', 'edit', 'full'];
 export const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
@@ -52,10 +53,16 @@ export function checkAgent(name, agent) {
 
 export function checkAgents(config) {
   only(config, ['orchestrator', 'limits', 'agents'], 'agents.json');
-  only(config.orchestrator, ['model', 'thinking'], 'orchestrator');
-  const { model, thinking } = config.orchestrator;
-  if (typeof model !== 'string' || !MODEL.test(model)) throw new Error('orchestrator: model must be a model ID like provider/model');
-  if (!THINKING.includes(thinking)) throw new Error(`orchestrator: thinking must be one of ${THINKING.join(', ')}`);
+  only(config.orchestrator, ['harness', 'model', 'thinking'], 'orchestrator');
+  // `thinking` is Pi's thinking level, Claude's --effort or an OpenCode variant.
+  // Configs and runs from before lead harnesses existed are Pi leads.
+  const { harness = 'pi', model = null, thinking = null } = config.orchestrator;
+  const lead = message => { throw new Error(`orchestrator: ${message}`); };
+  if (!LEAD_HARNESSES.includes(harness)) lead(`harness must be one of ${LEAD_HARNESSES.join(', ')}`);
+  if (model === null ? harness !== 'claude' : typeof model !== 'string' || !MODEL.test(model)) lead('model must be a model ID like provider/model');
+  if (harness === 'pi' && !THINKING.includes(thinking)) lead(`thinking must be one of ${THINKING.join(', ')}`);
+  if (harness === 'claude' && thinking !== null && !CLAUDE_EFFORT.includes(thinking)) lead(`effort must be one of ${CLAUDE_EFFORT.join(', ')}`);
+  if (harness === 'opencode' && thinking !== null && (typeof thinking !== 'string' || !VARIANT.test(thinking))) lead('effort must be an OpenCode model variant such as medium');
   only(config.limits, ['maxParallel', 'maxTasks'], 'limits');
   const limits = {
     maxParallel: integer(config.limits.maxParallel, 1, 8, 'limits.maxParallel'),
@@ -66,7 +73,7 @@ export function checkAgents(config) {
   if (!names.length || names.length > 20) throw new Error('Define 1–20 agents');
   const agents = {};
   for (const name of names) agents[name] = checkAgent(name, config.agents[name]);
-  return { orchestrator: { model, thinking }, limits, agents };
+  return { orchestrator: { harness, model, thinking }, limits, agents };
 }
 
 function checkPrompts(prompts, names) {

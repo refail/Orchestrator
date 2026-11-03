@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createRun } from '../src/team.mjs';
-import { piLaunch, TOOLS } from '../src/profiles.mjs';
+import { piLaunch } from '../src/profiles.mjs';
+import { TOOLS } from '../src/tools.mjs';
 import { DEFAULTS } from './fixtures/agents.mjs';
 
 const hasPi = spawnSync('pi', ['--version'], { encoding: 'utf8' }).status === 0;

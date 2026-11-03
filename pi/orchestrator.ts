@@ -1,9 +1,6 @@
-import { Type } from '@earendil-works/pi-ai';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
-import { delegate, listTasks, readRun, waitForTasks } from '../src/team.mjs';
-import { openPane, closeWorkerPane } from '../src/herdr.mjs';
-import { TOOLS } from '../src/profiles.mjs';
-import { listSkills, loadSkill } from '../src/skills.mjs';
+import { listTasks, readRun } from '../src/team.mjs';
+import { teamTools, toolText, TOOLS } from '../src/tools.mjs';
 
 export default function (pi: ExtensionAPI) {
   const runDir = process.env.HERDR_ORCH_RUN;
@@ -11,52 +8,18 @@ export default function (pi: ExtensionAPI) {
     if (!runDir) throw new Error('Missing HERDR_ORCH_RUN; start through personal.orchestrator.start');
     return readRun(runDir);
   };
-  // Role names come from this run's agent snapshot (agents.json at start).
-  const roles = runDir ? Object.keys(readRun(runDir).config.agents ?? {}) : [];
-  const result = (data: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(data, null, 2) }], details: data });
-  pi.registerTool({
-    name: 'team_delegate', label: 'Delegate', executionMode: 'sequential',
-    description: 'Assign a bounded task to a specialist in its own visible, named Herdr tab running the real agent TUI. Include goal, scope, evidence, and acceptance criteria in brief. Set skills to the agent skills (names from team_skill) the worker must follow. For follow-ups set previousTask to a finished task ID; a fresh worker receives that task/report. Each role\'s capabilities are listed under "Your specialists" in your instructions. Never retry an uncertain launch blindly.',
-    parameters: Type.Object({
-      role: roles.length ? Type.Union(roles.map(name => Type.Literal(name))) : Type.String(),
-      title: Type.String({ minLength: 1, maxLength: 100 }),
-      brief: Type.String({ minLength: 1, maxLength: 16000 }),
-      previousTask: Type.Optional(Type.String()),
-      skills: Type.Optional(Type.Array(Type.String(), { maxItems: 4 })),
-    }),
-    async execute(_id, params) {
-      run();
-      return result(await delegate(runDir, params, openPane));
-    },
-  });
-  pi.registerTool({
-    name: 'team_status', label: 'Team status',
-    description: 'List assignments and current recorded statuses. Unknown/launch_uncertain is not completion. Use team_wait for full final reports.',
-    parameters: Type.Object({}),
-    async execute() { const info = run(); return result({ project: info.project, run: info.id, tasks: listTasks(runDir) }); },
-  });
-  pi.registerTool({
-    name: 'team_wait', label: 'Collect reports',
-    description: 'Wait up to 60 seconds for recorded worker outcomes. Return full bounded reports. Panes of completed workers are closed once collected; failed/blocked/unknown ones stay open for the user to inspect. If still pending, wait again; do not re-dispatch. Interrupting this tool does not cancel workers.',
-    parameters: Type.Object({
-      taskIds: Type.Array(Type.String(), { minItems: 1, maxItems: 8 }),
-      timeoutMs: Type.Optional(Type.Integer({ minimum: 1, maximum: 60000 })),
-    }),
-    async execute(_id, params, signal) {
-      run();
-      return result(await waitForTasks(runDir, params.taskIds, params.timeoutMs ?? 30000, signal, closeWorkerPane));
-    },
-  });
-  pi.registerTool({
-    name: 'team_skill', label: 'Agent skill',
-    description: 'Load an agent skill (engineering workflow instructions). Without name, list available skills with descriptions. Start with using-agent-skills. Skills guide how you coordinate; project work they describe is still delegated.',
-    parameters: Type.Object({ name: Type.Optional(Type.String({ maxLength: 64 })) }),
-    async execute(_id, params) {
-      if (!params.name) return result(listSkills());
-      const text = loadSkill(params.name);
-      return { content: [{ type: 'text' as const, text }], details: { name: params.name } };
-    },
-  });
+  // Shared with the MCP server that Claude Code and OpenCode leads use. Pi
+  // validates arguments against plain JSON Schema, so no TypeBox is needed.
+  for (const tool of teamTools(runDir)) {
+    pi.registerTool({
+      name: tool.name, label: tool.label, description: tool.description, parameters: tool.inputSchema,
+      ...(tool.sequential ? { executionMode: 'sequential' as const } : {}),
+      async execute(_id, params, signal) {
+        const value = await tool.execute(params, signal);
+        return { content: [{ type: 'text' as const, text: toolText(value) }], details: typeof value === 'string' ? { name: params.name } : value };
+      },
+    });
+  }
   const restrict = () => { pi.setActiveTools(TOOLS); };
   pi.on('session_start', () => { run(); restrict(); });
   pi.on('before_agent_start', restrict);

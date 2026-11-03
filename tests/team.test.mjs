@@ -1,9 +1,9 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, utimesSync, readdirSync, statSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, existsSync, utimesSync, readdirSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createRun, delegate, taskStatus, listTasks, finishTask, waitForTasks, readTask, readRun, recoverTask, pruneRuns } from '../src/team.mjs';
+import { createRun, delegate, taskStatus, listTasks, finishTask, waitForTasks, readTask, readRun, recoverTask, pruneRuns, closeCompletedPanes } from '../src/team.mjs';
 import { config as agents, DEFAULTS } from './fixtures/agents.mjs';
 
 function fixture(t, overrides = {}) {
@@ -248,4 +248,85 @@ test('pruning removes runs idle for longer than the limit, but never active or l
   assert.deepEqual(Object.fromEntries(result.kept.map(item => [item.dir, item.reason])),
     { [recent]: 'recent activity', [leased]: 'holds the checkout lease', [running]: 'a worker is still running' });
   assert.deepEqual(pruneRuns(join(state, 'missing'), { maxAgeMs: week }), { removed: [], kept: [] });
+});
+
+const tracked = async value => ({ pane: { pane_id: 'w1:p9', terminal_id: `term-${value.env.HERDR_ORCH_TASK}` } });
+
+test('waiting returns as soon as one running task finishes, and finished tasks do not end the next wait', async t => {
+  const { run } = fixture(t);
+  const first = await delegate(run, { role: 'researcher', title: 'One', brief: 'Find' }, tracked);
+  const second = await delegate(run, { role: 'researcher', title: 'Two', brief: 'Find' }, tracked);
+  setTimeout(() => finishTask(run, first.id, { status: 'completed', text: 'Found it' }), 100);
+  let began = Date.now();
+  const tasks = await waitForTasks(run, [first.id, second.id], 60_000);
+  assert.ok(Date.now() - began < 5000, 'did not wait for the second task');
+  assert.deepEqual(tasks.map(task => task.status), ['completed', 'starting']);
+  began = Date.now();
+  const again = await waitForTasks(run, [first.id, second.id], 300);
+  assert.ok(Date.now() - began >= 290, 'an already finished task is not news');
+  assert.equal(again[1].status, 'starting');
+  await assert.rejects(waitForTasks(run, [second.id], 15 * 60_000 + 1), /1–900000 ms/);
+});
+
+test('a worker waiting for the user in its tab is flagged and ends a wait when it starts waiting', async t => {
+  const { run } = fixture(t);
+  const task = await delegate(run, { role: 'researcher', title: 'Find', brief: 'Find' }, tracked);
+  let agent = 'working';
+  const inspect = async () => new Map([[`term-${task.id}`, agent]]);
+  setTimeout(() => { agent = 'blocked'; }, 50);
+  const [waiting] = await waitForTasks(run, [task.id], 60_000, undefined, undefined, inspect, 10);
+  assert.equal(waiting.waiting, true);
+  assert.equal(waiting.status, 'starting', 'a hint, never a recorded outcome');
+  assert.match(waiting.detail, /Herdr tab/);
+  const began = Date.now();
+  const [still] = await waitForTasks(run, [task.id], 300, undefined, undefined, inspect, 10);
+  assert.ok(Date.now() - began >= 290, 'already waiting is not news');
+  assert.equal(still.waiting, true);
+  setTimeout(() => { agent = 'working'; }, 20); // The user answers the prompt…
+  setTimeout(() => { agent = 'blocked'; }, 80); // …and the worker asks again.
+  const [again] = await waitForTasks(run, [task.id], 60_000, undefined, undefined, inspect, 10);
+  assert.equal(again.waiting, true);
+  const [unknownPane] = await waitForTasks(run, [task.id], 10, undefined, undefined, async () => undefined, 10);
+  assert.equal(unknownPane.waiting, undefined, 'no Herdr information, no flag');
+  finishTask(run, task.id, { status: 'completed', text: 'Done' });
+  const [done] = await waitForTasks(run, [task.id], 10, undefined, undefined, inspect, 10);
+  assert.equal(done.waiting, undefined);
+});
+
+test('a worker pane whose runner never started becomes unknown and is recoverable without --confirm', async t => {
+  const { run } = fixture(t);
+  const task = await delegate(run, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane);
+  assert.equal(taskStatus(run, task.id).status, 'starting');
+  const path = join(run, 'tasks', task.id, 'task.json');
+  const record = JSON.parse(readFileSync(path, 'utf8'));
+  rmSync(path);
+  writeFileSync(path, JSON.stringify({ ...record, createdAt: new Date(Date.now() - 3 * 60_000).toISOString() }));
+  const status = taskStatus(run, task.id);
+  assert.equal(status.status, 'unknown');
+  assert.match(status.detail, /never started/);
+  assert.equal(recoverTask(run, task.id).status, 'interrupted');
+  assert.equal((await delegate(run, { role: 'coder', title: 'Again', brief: 'Implement' }, openPane)).status, 'starting', 'lease released');
+});
+
+test('recovering through a symlinked run path releases the checkout lease', async t => {
+  const { root, run } = fixture(t);
+  const coder = await delegate(run, { role: 'coder', title: 'Code', brief: 'Implement' }, openPane);
+  const link = join(root, 'linked-run');
+  symlinkSync(run, link);
+  assert.equal(recoverTask(link, coder.id, { confirmed: true }).status, 'interrupted');
+  assert.equal((await delegate(run, { role: 'coder', title: 'Again', brief: 'Implement' }, openPane)).status, 'starting');
+});
+
+test('when the lead exits, completed worker panes close even if never collected; others stay open', async t => {
+  const { run } = fixture(t);
+  const done = await delegate(run, { role: 'researcher', title: 'Done', brief: 'Find' }, tracked);
+  const failed = await delegate(run, { role: 'researcher', title: 'Failed', brief: 'Find' }, tracked);
+  const running = await delegate(run, { role: 'researcher', title: 'Running', brief: 'Find' }, tracked);
+  finishTask(run, done.id, { status: 'completed', text: 'Done' });
+  finishTask(run, failed.id, { status: 'failed', text: 'Auth failed' });
+  const closed = [];
+  await closeCompletedPanes(run, async terminal => { closed.push(terminal); return true; });
+  await closeCompletedPanes(run, async terminal => { closed.push(terminal); return true; });
+  assert.deepEqual(closed, [`term-${done.id}`], 'once, and only the completed one');
+  assert.ok(running.id);
 });

@@ -80,3 +80,10 @@ export async function closeWorkerPane(terminalId, env = process.env) {
   await call(['plugin', 'pane', 'close', owners[0].pane_id], env);
   return true;
 }
+// Herdr's detected agent state (idle/working/blocked/done/unknown) per stable
+// terminal ID. Best effort: callers treat a failure as "no information".
+export async function agentStates(env = process.env) {
+  requireHerdr(env);
+  const { panes } = await call(['pane', 'list'], env);
+  return new Map(panes.map(pane => [pane.terminal_id, pane.agent_status]));
+}
